@@ -48,6 +48,29 @@ function failure(code, message) {
   error.safe = true;
   return error;
 }
+
+// CDP can deliver a clipped/previous compositor surface after a Mac viewport
+// resize. Check the actual JPEG header before using the requested dimensions.
+export function browserJPEGDimensions(encoded) {
+  const data = Buffer.from(encoded, "base64");
+  if (data.length < 4 || data[0] !== 0xff || data[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset + 3 < data.length) {
+    if (data[offset++] !== 0xff) return null;
+    while (offset < data.length && data[offset] === 0xff) offset++;
+    const marker = data[offset++];
+    if (marker === 0xda || marker === 0xd9 || offset + 2 > data.length) return null;
+    if (marker === 0x01 || marker >= 0xd0 && marker <= 0xd8) continue;
+    const length = data.readUInt16BE(offset);
+    if (length < 2 || offset + length > data.length) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      if (length < 8) return null;
+      return { width: data.readUInt16BE(offset + 5), height: data.readUInt16BE(offset + 3) };
+    }
+    offset += length;
+  }
+  return null;
+}
 export function checkedBrowserURL(value) {
   if (typeof value !== "string" || value.length > 4096) throw failure("invalid_url", "浏览器地址无效");
   if (value === "about:blank") return value;
@@ -291,21 +314,21 @@ export function createNativeBrowserService(options = {}) {
         // Screenshot capture can itself schedule another compositor frame.
         // An identical damage bitmap must not trigger a screenshot feedback
         // loop or invalidate the viewer's existing static-frame receipt.
-        if (mac || capture.signal !== frame.data) {
+        if (capture.signal !== frame.data) {
           capture.signal = frame.data;
-          capture.latest = { jpeg: mac ? frame.data : undefined, sequence: token() };
+          // Treat screencast as damage notification. Its macOS bitmap can be
+          // a Retina crop with apparently valid dimensions; capture pixels via
+          // Playwright's viewport screenshot and cache them until new damage.
+          capture.latest = { sequence: token() };
         }
         capture.ack = frame.sessionId;
         received();
       };
       connection.on("Page.screencastFrame", capture.receive);
       try {
-        // Screencast otherwise downscales HiDPI output to CSS pixels. This clip
-        // preserves the logical viewport and input coordinates at native density.
-        if (mac) await connection.send("Emulation.setDeviceMetricsOverride", {
-          ...size, deviceScaleFactor: displayScale, mobile: false,
-          viewport: { x: 0, y: 0, ...size, scale: displayScale },
-        });
+        // Playwright owns viewport and device density. A second metrics override
+        // with a viewport clip makes headed macOS screencast content jump to a
+        // cropped Retina surface even when its JPEG dimensions look correct.
         await connection.send("Page.startScreencast", {
           format: "jpeg", quality: 85,
           maxWidth: Math.round(size.width * displayScale), maxHeight: Math.round(size.height * displayScale),
@@ -315,31 +338,46 @@ export function createNativeBrowserService(options = {}) {
         }
         let timeout;
         try {
-          await Promise.race([first, new Promise((_, reject) => {
-            timeout = setTimeout(() => reject(failure("frame_unavailable", "浏览器画面流尚未就绪")), 5000);
+          await Promise.race([first, new Promise((resolve, reject) => {
+            timeout = setTimeout(() => mac ? resolve() : reject(failure("frame_unavailable", "浏览器画面流尚未就绪")), mac ? 300 : 5000);
           })]);
         } finally { clearTimeout(timeout); }
+        // A static Mac page may emit no damage after resizing. Seed its first
+        // frame through the same full-viewport fallback instead of reconnecting.
+        if (mac && !capture.latest) capture.latest = { sequence: token() };
       } catch (error) { await stopCapture(tab.page); throw error; }
     }
     clearTimeout(capture.expiry);
-    capture.expiry = setTimeout(() => { void stopCapture(tab.page); }, 1500);
-    capture.expiry.unref?.();
-    const frame = capture.latest;
-    // Windows screencast preserves a damage stream at CSS resolution, but a
-    // viewport scale changes its native input surface. Capture only new damage
-    // at the context's actual device density and reuse it for static frames.
-    if (!mac && !frame.jpeg) {
-      const started = performance.now();
-      frame.jpeg = (await tab.page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
-      captureMetrics.screenshots++;
-      captureMetrics.total_ms += performance.now() - started;
+    try {
+      const frame = capture.latest;
+      // Windows screencast preserves a damage stream at CSS resolution, but a
+      // viewport scale changes its native input surface. Capture only new damage
+      // at the context's actual device density and reuse it for static frames.
+      const expected = { width: Math.round(size.width * displayScale), height: Math.round(size.height * displayScale) };
+      const actual = mac && frame.jpeg ? browserJPEGDimensions(frame.jpeg) : null;
+      if (!frame.jpeg || mac && (actual?.width !== expected.width || actual?.height !== expected.height)) {
+        const started = performance.now();
+        frame.jpeg = (await tab.page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
+        const captured = browserJPEGDimensions(frame.jpeg);
+        if (captured?.width !== expected.width || captured?.height !== expected.height)
+          throw failure("frame_unavailable", "浏览器画面尺寸尚未同步");
+        captureMetrics.screenshots++;
+        captureMetrics.total_ms += performance.now() - started;
+      }
+      if (capture.ack !== null) {
+        const sessionId = capture.ack;
+        capture.ack = null;
+        await capture.connection.send("Page.screencastFrameAck", { sessionId });
+      }
+      return frame;
+    } finally {
+      // A full-viewport fallback can take longer than the idle lease on a
+      // busy page. Reclaim only an idle capture, never its in-flight CDP work.
+      if (captures.get(tab.page) === capture) {
+        capture.expiry = setTimeout(() => { void stopCapture(tab.page); }, 1500);
+        capture.expiry.unref?.();
+      }
     }
-    if (capture.ack !== null) {
-      const sessionId = capture.ack;
-      capture.ack = null;
-      await capture.connection.send("Page.screencastFrameAck", { sessionId });
-    }
-    return frame;
   }
   async function cdp(method, params = {}, sessionID) {
     if (!sessionID) return browserCDP.send(method, params);
@@ -471,7 +509,10 @@ export function createNativeBrowserService(options = {}) {
       const extensionTools = typeof modules.BrowserExtensions === "function" && existsSync(path.join(splitDirectory, "manifest.json"));
       try {
         context = await chromium.launchPersistentContext(options.profileDirectory ?? path.join(directory, "Profile"), {
-          executablePath: options.executablePath ?? browserExecutable(), headless: mac || (options.testing === true && options.headless !== false),
+          // macOS user browsing is owned by the separate native Chrome window.
+          // Keep this editor/diagnostic controller off the desktop so its
+          // temporary pages cannot steal focus from the real browser.
+          executablePath: options.executablePath ?? browserExecutable(), headless: options.testing === true ? options.headless !== false : mac,
           chromiumSandbox: true, viewport, deviceScaleFactor: displayScale, acceptDownloads: true,
           ...(timezone ? { timezoneId: timezone } : {}), ...(language ? { locale: language } : {}),
           ...(networkMode === "proxy" ? { proxy: { server: proxy, bypass: proxyBypass } } : {}),

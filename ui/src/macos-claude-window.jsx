@@ -26,10 +26,10 @@ const messages = {
   input_owned_by_another_view: "另一个连接正在操作此窗口，请等待它释放按键或拖动。",
 };
 
-async function windowRequest(action, fields = {}, connection) {
-  const result = connection ? await connection.request(action, fields) : await api("/macos/claude/window", { action, ...fields });
+async function windowRequest(action, fields = {}, connection, app = "claude") {
+  const result = connection ? await connection.request(action, fields) : await api(`/macos/${app}/window`, { action, ...fields });
   if (result.error) {
-    const error = new Error(messages[result.error] || "未能读取或操作虚拟 Mac 中的应用窗口。");
+    const error = new Error(app === "chrome" && result.error === "not_running" ? "请打开虚拟 Mac 中的 Chrome。" : messages[result.error] || "未能读取或操作虚拟 Mac 中的应用窗口。");
     error.code = result.error;
     throw error;
   }
@@ -58,14 +58,15 @@ function matchWindowBackground(img, pane, canvasRef) {
   pane.style.backgroundColor = uniform && pixels[3] === 255 ? `rgb(${pixels[0]}, ${pixels[1]}, ${pixels[2]})` : "";
 }
 
-export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sidebarCollapsed, onExpand, onConfirm, uploads = [], onStatus = () => {}, onFallback = () => {} }) {
+export function MacOSClaudeWindow({ chrome = false, visible, keyboard = "mac", remoteRef, sidebarCollapsed, onExpand, onConfirm, uploads = [], onStatus = () => {}, onFallback = () => {} }) {
   const windowVisible = useWindowVisibility();
   const screenVisible = visible && windowVisible;
   const connection = useRef(null);
   const [inputChannel, setInputChannel] = useState(null);
   const frameConnection = useRef(null);
-  const request = (action, fields) => windowRequest(action, fields, connection.current);
-  const [zoom, setZoom] = useDesktopZoom();
+  const app = chrome ? "chrome" : "claude";
+  const request = (action, fields) => windowRequest(action, fields, connection.current, app);
+  const [zoom, setZoom] = useDesktopZoom(chrome ? "cage-native-chrome-zoom" : "cage-desktop-zoom");
   const [state, setState] = useState(null);
   const [error, setError] = useState("");
   const [fileError, setFileError] = useState("");
@@ -126,7 +127,7 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
           checkFrame = true;
           nextStatus = Date.now() + 2200;
           if (live() && current.persistent && !connection.current) {
-            connection.current = createMacWindowConnection();
+            connection.current = createMacWindowConnection(app);
             setInputChannel(connection.current);
           }
         }
@@ -151,7 +152,7 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
                 frame.current = null;
                 setImage(null);
                 setError(messages[reason] || "未能读取虚拟 Mac 的窗口画面，请重新连接。");
-              });
+              }, app);
             }
             frameConnection.current.resize(viewport.current);
             return;
@@ -203,7 +204,15 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
 
   useEffect(() => {
     if (!screenVisible || !state?.input || !surface.current || !pane.current || (state.persistent && !inputChannel)) return;
-    const inputRequest = (action, fields) => windowRequest(action, fields, inputChannel);
+    const inputRequest = async (action, fields) => {
+      // Capture keeps working when a guest notification or another app takes
+      // focus. A click in the viewer must focus that same Chrome instance before
+      // the helper checks its foreground window and delivers system input.
+      if (chrome && ((action === "pointer" && fields?.phase === "down") || action === "scroll")) {
+        await windowRequest("launch", {}, inputChannel, app);
+      }
+      return windowRequest(action, fields, inputChannel, app);
+    };
     const transport = createMacWindowInput({
       element: surface.current,
       frame: () => frame.current,
@@ -221,7 +230,7 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
       systemClipboard: () => true,
       copyText: (sendCopy, valid) => copyGuestText({ request: value => api("/clipboard/copy", value), sendCopy, valid }),
       surface: () => surface.current,
-      inputLabel: "向 Claude Desktop 输入",
+      inputLabel: chrome ? "向 Chrome 输入" : "向 Claude Desktop 输入",
       tabId: () => frame.current ? `${frame.current.pid}:${frame.current.window}:${frame.current.geometry}` : "",
       isActive: () => Boolean(current.current.screenVisible && current.current.input && frame.current),
       onStatus: text => current.current.onStatus(text),
@@ -277,12 +286,12 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
     } catch (error) { fileFailure(error); }
   }
   if (!visible) return null;
-  return <section className="claude-desktop-view mac-claude" aria-label="虚拟 Mac 中的 Claude Desktop">
+  return <section className="claude-desktop-view mac-claude" aria-label={chrome ? "虚拟 Mac 中的 Chrome" : "虚拟 Mac 中的 Claude Desktop"}>
     <BrowserUploads requests={uploads} onStatus={onStatus} />
-    <DesktopToolbar desktop={state} platform="macOS" zoom={zoom} setZoom={setZoom} onConfirm={onConfirm}
+    <DesktopToolbar title={chrome ? "Google Chrome" : "Claude Desktop"} storageKey={chrome ? "cage-native-chrome-zoom" : "cage-desktop-zoom"} desktop={state} platform="macOS" zoom={zoom} setZoom={setZoom} onConfirm={onConfirm}
       onStop={() => action("stop")} refresh={() => refresh(n => n+1)} sidebarCollapsed={sidebarCollapsed} onExpand={onExpand}>
-      <MacOSLogin />
-      <button disabled={!state?.input || !image || transferring} onClick={() => void chooseFiles()}>添加附件</button>
+      {!chrome && <MacOSLogin />}
+      {!chrome && <button disabled={!state?.input || !image || transferring} onClick={() => void chooseFiles()}>添加附件</button>}
       <input ref={picker} type="file" multiple hidden aria-label="选择 Claude 附件" onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; if (files.length) void receive({ files, kind: "paste" }, pickerTarget.current || undefined).catch(fileFailure); }} />
       {(!state?.running || error) && <button onClick={() => action("launch")} disabled={!state?.installed}>{state?.running ? "重新连接应用" : "打开应用"}</button>}
       {state?.installed && !state.screen && <button onClick={() => action("request-screen")}>授权窗口画面</button>}
@@ -290,11 +299,11 @@ export function MacOSClaudeWindow({ visible, keyboard = "mac", remoteRef, sideba
     </DesktopToolbar>
     {error && <p role="alert">{error}</p>}
     {fileError && <p role="alert">{fileError}</p>}
-    {state && !state.installed && <p>此虚拟 Mac 尚未安装官方 Claude Desktop。</p>}
+    {state && !state.installed && <p>{chrome ? "此虚拟 Mac 尚未安装 Google Chrome。" : "此虚拟 Mac 尚未安装官方 Claude Desktop。"}</p>}
     {state?.running && !state.screen && <p>{messages.screen_recording_permission}</p>}
     {state?.running && state.screen && !state.input && <p>{messages.accessibility_permission}</p>}
     <div ref={pane} className="mac-claude-frame" style={{ "--desktop-zoom": zoom }}>
-      {image && <img ref={surface} key={image.geometry || `${image.pid}-${image.window}`} alt="Claude Desktop 客机窗口" src={image.src} draggable={false}
+      {image && <img ref={surface} key={image.geometry || `${image.pid}-${image.window}`} alt={chrome ? "Chrome 客机原生窗口" : "Claude Desktop 客机窗口"} src={image.src} draggable={false}
         onLoad={e => {
           const img = e.currentTarget;
           const width = image.width || img.naturalWidth;

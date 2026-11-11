@@ -8,12 +8,12 @@ import './browser-settings.css';
 
 const sections = [
   { id: 'general', title: '新标签页', icon: Globe2, search: '启动 新标签页 主页 默认 地址 网址' },
-  { id: 'appearance', title: '外观', icon: LayoutPanelLeft, search: '外观 标签栏 布局 横排 竖排' },
+  { id: 'appearance', title: '外观', icon: LayoutPanelLeft, search: '外观 标签栏 布局 横排 竖排 缩放 比例 大小' },
   { id: 'privacy', title: '隐私与网站数据', icon: ShieldCheck, search: '隐私 cookie 网站数据 权限 清除 浏览记录' },
   { id: 'extensions', title: '扩展', icon: Puzzle, search: '扩展 插件 管理 安装 导入 edge chrome' },
   { id: 'about', title: '关于浏览器', icon: Info, search: '关于 浏览器 chromium 版本' },
 ];
-export function BrowserSettingsPage({ tab, tabs, currentHome, layout, onLayoutChange, onSaved, onInternal, onOpenPage, onConfirm, onSectionChange }) {
+export function BrowserSettingsPage({ tab, tabs, currentHome, layout, onLayoutChange, zoom = 1, onZoomChange, onSaved, onInternal, onOpenPage, onConfirm, onSectionChange }) {
   const [section, setSection] = useState(tab.url.split('#')[1] || 'general'), [query, setQuery] = useState('');
   const [home, setHome] = useState(currentHome || 'https://www.bing.com/'), [savedHome, setSavedHome] = useState(currentHome || 'https://www.bing.com/');
   const [saving, setSaving] = useState(false), [error, setError] = useState(''), [saved, setSaved] = useState(false);
@@ -54,7 +54,7 @@ export function BrowserSettingsPage({ tab, tabs, currentHome, layout, onLayoutCh
             <div className="browser-setting-actions"><button className="primary" disabled={saving || loading || home === savedHome}>{saving ? '正在保存…' : '保存地址'}</button>{saved && <span role="status">已保存</span>}</div>
             {error && <p className="browser-settings-error" role="alert">{error}</p>}
           </form></>}
-          {item.id === 'appearance' && <><p>调整网页与文件编辑器的标签栏。</p><div className="browser-setting-row"><div><h3>标签栏布局</h3><p>立即生效，保存在本机。</p></div><InlineSelect aria-label="标签栏布局" value={layout} onValueChange={onLayoutChange}><option value="horizontal">横排（顶部）</option><option value="vertical">竖排（左侧）</option></InlineSelect></div><p>浏览器设置页跟随 Cage 当前的字体与配色。</p></>}
+          {item.id === 'appearance' && <><p>调整网页与文件编辑器的标签栏。</p><div className="browser-setting-row"><div><h3>标签栏布局</h3><p>立即生效，保存在本机。</p></div><InlineSelect aria-label="标签栏布局" value={layout} onValueChange={onLayoutChange}><option value="horizontal">横排（顶部）</option><option value="vertical">竖排（左侧）</option></InlineSelect></div><div className="browser-setting-row"><div><h3>网页显示比例</h3><p>较小的比例可显示更多内容，立即生效并保存在本机。</p></div><InlineSelect aria-label="网页显示比例" value={zoom} onValueChange={onZoomChange}>{[0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25].map(value => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}</InlineSelect></div><p>浏览器设置页跟随 Cage 当前的字体与配色。</p></>}
           {item.id === 'privacy' && <><p>管理网站保存在当前浏览会话中的数据和访问权限。</p>
             <div className="browser-setting-row"><div><h3>Cookie 与登录状态</h3><p>普通会话与无痕会话分别管理。</p></div><InlineSelect aria-label="Cookie 浏览会话" value={cookieSession} onValueChange={setCookieSession}><option value="normal">普通会话</option><option value="private" disabled={!privateTab}>无痕会话</option></InlineSelect></div>
             <BrowserCookies key={cookieTab.id} tab={cookieTab} onClose={() => changeSection('general')} />

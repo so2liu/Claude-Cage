@@ -39,7 +39,7 @@ func TestFirstAuthorizationUsesFreshSelectedSystemPanelBeforeAccessibility(t *te
 }
 
 func TestAuthorizedAccessibilityRequiresSecureFocusForBothAppleHosts(t *testing.T) {
-	for _, bundle := range []string{"com.apple.systempreferences", "com.apple.authorizationhost"} {
+	for _, bundle := range []string{"com.apple.systempreferences", "com.apple.authorizationhost", "com.apple.SecurityAgent"} {
 		target := passwordTarget{maintenanceWindow: maintenanceFixture(), Accessibility: true}
 		target.Bundle, target.PasswordFocused = bundle, true
 		if !(passwordSelection{}).permits(target, "trial", time.Now()) {

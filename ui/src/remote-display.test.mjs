@@ -8,8 +8,12 @@ test("normal size preserves logical pixels; zoom changes workspace, large displa
   assert.deepEqual(displayGeometry({ width: 1000, height: 700 }, { desktop: true, zoom: 1.25 }), { width: 1600, height: 1120 });
   assert.deepEqual(displayGeometry({ width: 5000, height: 3000 }, { desktop: true }), { width: 8192, height: 4915 });
   assert.deepEqual(displayGeometry({ width: 286, height: 446 }), { width: 572, height: 892 });
-  assert.deepEqual(displayGeometry({ width: 160, height: 240 }, { density: 1.5 }), { width: 240, height: 360 });
+  assert.deepEqual(displayGeometry({ width: 160, height: 240 }, { density: 1.5 }), { width: 320, height: 360 });
   assert.deepEqual(displayGeometry({ width: 1000, height: 700 }, { desktop: true, zoom: 1.25, density: 1.5 }), { width: 1200, height: 840 });
+  assert.deepEqual(displayGeometry({ width: 1000, height: 700 }, { density: 1 }), { width: 1000, height: 700 });
+  assert.deepEqual(displayGeometry({ width: 1000, height: 700 }, { density: 1.25 }), { width: 1250, height: 875 });
+  assert.deepEqual(displayGeometry({ width: 1000, height: 700 }, { density: 0 }), { width: 2000, height: 1400 });
+  assert.deepEqual(displayGeometry({ width: 160, height: 240 }, { density: 1 }), { width: 320, height: 240 });
   assert.equal(displayGeometry({ width: 0, height: 700 }), null);
 });
 

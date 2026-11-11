@@ -62,10 +62,7 @@ func MaintainMacOSComponents(ctx context.Context, profile, kit, manifestPath str
 	cache := filepath.Join(profile, "state", "guest-media", MacOS)
 	if tools {
 		mode = "tools"
-		command := exec.CommandContext(ctx, "/bin/bash", filepath.Join(kit, "prepare-macos-media.sh"), cache)
-		command.Env = append(os.Environ(), "CAGE_REFRESH_TOOLS=1")
-		command.Stdout, command.Stderr = stdout, stderr
-		if err = command.Run(); err != nil {
+		if err = PrepareMacOSMedia(ctx, profile, kit, cache, true, stdout, stderr); err != nil {
 			return fmt.Errorf("准备原生工具包失败：%w", err)
 		}
 	}

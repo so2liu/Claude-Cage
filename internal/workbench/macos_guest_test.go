@@ -199,3 +199,17 @@ func TestMacOSSetupAdministratorIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestMacOSBrowserCredentialsReportNativePixelDensity(t *testing.T) {
+	s := testServer(t)
+	s.macosGuest = &guestos.MacOSProfile{Instance: "mac", User: "guestdev"}
+	s.ready = true
+	s.credentials.DisplayScale = 2
+	response := windowsBrowserRequestForTest(s, http.MethodGet, "/api/vnc-credentials", nil)
+	var data struct {
+		Scale float64 `json:"display_scale"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &data) != nil || data.Scale != 1 {
+		t.Fatalf("Mac browser density mismatch: %d %s", response.Code, response.Body.String())
+	}
+}

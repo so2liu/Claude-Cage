@@ -31,7 +31,7 @@ func TestMacOSStartAndControllerReconnectRequireFreshNetworkCheck(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newMacWorkspaceGuest(t, func(_ ssh.Channel, command string) (uint32, bool) {
-				return 0, strings.Contains(command, "uname -s")
+				return 0, strings.Contains(command, "uname -s") || strings.Contains(command, "/usr/sbin/systemsetup") || strings.Contains(command, "AppleLocale")
 			})
 			s := g.s
 			s.ready = false

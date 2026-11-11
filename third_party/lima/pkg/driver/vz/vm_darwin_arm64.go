@@ -60,7 +60,10 @@ func newMacPlatformConfiguration(inst *limatype.Instance) (vz.PlatformConfigurat
 		if err = ensureIPSW(inst.Dir); err != nil {
 			return nil, err
 		}
-		ipsw := filepath.Join(inst.Dir, filenames.ImageIPSW)
+		ipsw, err := canonicalMacOSRestorePath(filepath.Join(inst.Dir, filenames.ImageIPSW))
+		if err != nil {
+			return nil, err
+		}
 		ipswImage, err := vz.LoadMacOSRestoreImageFromPath(ipsw)
 		if err != nil {
 			return nil, err
@@ -136,6 +139,10 @@ func newMacOSBootLoader() (vz.BootLoader, error) {
 }
 
 func installMacOS(ctx context.Context, vm *vz.VirtualMachine, ipsw string) error {
+	ipsw, err := canonicalMacOSRestorePath(ipsw)
+	if err != nil {
+		return err
+	}
 	installer, err := vz.NewMacOSInstaller(vm, ipsw)
 	if err != nil {
 		return err
@@ -187,4 +194,15 @@ func installMacOS(ctx context.Context, vm *vz.VirtualMachine, ipsw string) error
 		}
 	}
 	return nil
+}
+
+// Apple's installation service cannot follow a symlinked storage ancestor,
+// even when this process can stat and hash the same IPSW through that path.
+// Keep Lima's stable identity path, resolving only at the VZ API boundary.
+func canonicalMacOSRestorePath(path string) (string, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve macOS restore image: %w", err)
+	}
+	return filepath.Abs(real)
 }

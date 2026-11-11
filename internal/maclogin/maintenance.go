@@ -25,7 +25,7 @@ type maintenanceWindow struct {
 
 func (w maintenanceWindow) valid(user string) bool {
 	if w.Version != 1 || w.Error != "" || w.User != user || w.PID <= 0 || w.Window == 0 ||
-		(w.Bundle != "com.apple.systempreferences" && w.Bundle != "com.apple.authorizationhost") {
+		(w.Bundle != "com.apple.systempreferences" && w.Bundle != "com.apple.authorizationhost" && w.Bundle != "com.apple.SecurityAgent") {
 		return false
 	}
 	id, err := uuid.Parse(w.Session)

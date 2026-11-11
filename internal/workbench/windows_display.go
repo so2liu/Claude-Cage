@@ -319,6 +319,7 @@ func serveWindowsWindowRFB(stream io.ReadWriter, initial windowsWindowFrame, req
 	sized := false
 	supportsResize := false
 	supportsFence := false
+	cursorSent := false
 	rgbOrder := false
 	useZlib := false
 	useTight := false
@@ -364,7 +365,11 @@ func serveWindowsWindowRFB(stream io.ReadWriter, initial windowsWindowFrame, req
 			useTight = false
 			useTightPNG = false
 			fenceRequested := false
+			cursorRequested := false
 			for i := 0; i < count; i++ {
+				if int32(binary.BigEndian.Uint32(encodings[i*4:])) == -239 {
+					cursorRequested = true
+				}
 				if int32(binary.BigEndian.Uint32(encodings[i*4:])) == -312 {
 					fenceRequested = true
 				}
@@ -388,6 +393,12 @@ func serveWindowsWindowRFB(stream io.ReadWriter, initial windowsWindowFrame, req
 				}
 			}
 			supportsFence = fenceRequested
+			if cursorRequested && !cursorSent {
+				if err := write(nativeCursorUpdate()); err != nil {
+					return err
+				}
+			}
+			cursorSent = cursorRequested
 		case 3:
 			update, err := read(9)
 			if err != nil {

@@ -102,7 +102,7 @@ func (s *Server) macOSWindowFrames(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	stop := context.AfterFunc(s.lifetimeContext(), func() { cancel(); ws.Close() })
 	defer stop()
-	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", `exec /usr/bin/nc -U "$HOME/Library/Caches/dev.cage.GuestClaudeWindow/window.sock"`)
+	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", nativeWindowSocketCommand(r.URL.Path == "/api/macos/chrome/connection" || r.URL.Path == "/api/macos/chrome/frames", "30"))
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return

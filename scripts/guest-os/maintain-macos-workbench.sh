@@ -95,7 +95,7 @@ for app in "$kit"/*.app "$kit"/project/*.app; do
     apps+=("$target")
     if [[ -d $target ]]; then app_existed+=(yes); else app_existed+=(no); fi
 done
-for label in dev.cage.GuestClaudeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
+for label in dev.cage.GuestClaudeWindow dev.cage.GuestChromeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
     if sudo -Hu "$user" /bin/launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         loaded+=("$label")
         previous_loaded+=("$label")
@@ -157,7 +157,7 @@ for app in "$kit"/*.app "$kit"/project/*.app; do
 done
 # Registration can migrate an existing agent's lifecycle settings. Restore
 # those files with the matching binaries if activation or publication fails.
-for label in dev.cage.GuestClaudeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
+for label in dev.cage.GuestClaudeWindow dev.cage.GuestChromeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
     target="/Users/$user/Library/LaunchAgents/$label.plist"
     [[ ! -L $target && ( ! -e $target || ( -f $target && $(stat -f %u "$target") == "$uid" ) ) ]]
     index=${#changed[@]}
@@ -170,11 +170,12 @@ for label in dev.cage.GuestClaudeWindow dev.cage.GuestClipboard dev.cage.GuestBr
     changed+=("$target")
 done
 sudo -Hu "$user" /usr/local/libexec/cage-register-claude-window --prepare
+sudo -Hu "$user" /usr/local/libexec/cage-register-chrome-window --prepare
 sudo -Hu "$user" /usr/local/libexec/cage-register-clipboard --prepare
 sudo -Hu "$user" /usr/local/libexec/cage-register-browser --prepare
 # New helpers are activated for an already logged-in GUI user as well.
 if [[ $(stat -f %u /dev/console) == "$uid" ]]; then
-    for label in dev.cage.GuestClaudeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
+    for label in dev.cage.GuestClaudeWindow dev.cage.GuestChromeWindow dev.cage.GuestClipboard dev.cage.GuestBrowser; do
         if [[ " ${loaded[*]-} " != *" $label "* ]]; then loaded+=("$label"); fi
     done
 fi

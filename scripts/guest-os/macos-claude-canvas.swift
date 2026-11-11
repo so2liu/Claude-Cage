@@ -58,6 +58,9 @@ private func canSet(_ window: AXUIElement, _ name: String) -> Bool {
 }
 
 private func titleBarHeight(_ window: AXUIElement, _ frame: CGRect) -> CGFloat {
+    // Chrome's tabs and address bar belong to the captured surface. Capture
+    // and input geometry must use the same uncropped native window bounds.
+    if nativeChrome { return 0 }
     var bottom: CGFloat = 0
     for name in [kAXCloseButtonAttribute, kAXMinimizeButtonAttribute, kAXZoomButtonAttribute] {
         guard let raw = axAttribute(window, name), CFGetTypeID(raw) == AXUIElementGetTypeID(),
@@ -136,7 +139,7 @@ final class ClaudeCanvasSession {
         config.height = max(1, Int((layout.frame.height*layout.scale).rounded()))
         config.captureResolution = .best
         config.ignoreShadowsSingleWindow = true; config.showsCursor = false
-        if #available(macOS 14.2, *) { config.includeChildWindows = false }
+        if #available(macOS 14.2, *) { config.includeChildWindows = nativeChrome }
         let geometry = record(layout)
         let (updated, sequence) = try await MacWindowStream.shared.frame(filter: filter, configuration: config, identity: geometry, after: after, wait: wait)
         guard try liveBounds(layout.id, layout.pid) == layout.frame,

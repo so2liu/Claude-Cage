@@ -4,7 +4,7 @@ import ApplicationServices
 import ScreenCaptureKit
 import Security
 
-private let appURL = URL(fileURLWithPath: "/Applications/Claude.app")
+private let appURL = URL(fileURLWithPath: nativeAppPath)
 private let requirement = #"anchor apple generic and identifier "com.anthropic.claudefordesktop" and certificate leaf[subject.OU] = "Q6L2SF6YDW" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#
 
 struct Request: Decodable {
@@ -14,6 +14,7 @@ struct Request: Decodable {
     var x, y, delta: Double?
     var deltaX: Double?
     var key, text: String?
+    var url: String?
     var code, phase, mode, context, session: String?
     var down, control, alt: Bool?
     var button, buttons, clicks: Int?
@@ -48,7 +49,7 @@ func consoleUser() throws {
 private func verifiedInstall() throws {
     var rule: SecRequirement?
     var code: SecStaticCode?
-    guard SecRequirementCreateWithString(requirement as CFString, [], &rule) == errSecSuccess, let rule,
+    guard SecRequirementCreateWithString((nativeChrome ? #"anchor apple generic and identifier "com.google.Chrome" and certificate leaf[subject.OU] = "EQHXZ8M8AV""# : requirement) as CFString, [], &rule) == errSecSuccess, let rule,
           SecStaticCodeCreateWithPath(appURL as CFURL, [], &code) == errSecSuccess, let code,
           SecStaticCodeCheckValidity(code, [], rule) == errSecSuccess else {
         throw Failure(5, "identity_error")
@@ -78,7 +79,7 @@ private final class ClaudePicker: NSObject, SCContentSharingPickerObserver {
             let window = filter.includedWindows.first
             guard filter.style == .window, filter.includedWindows.count == 1,
                   let owner = window?.owningApplication,
-                  owner.bundleIdentifier == "com.anthropic.claudefordesktop",
+                  owner.bundleIdentifier == nativeAppBundle,
                   (try? claudePIDs().contains(owner.processID)) == true else { self.selection = nil; return }
             self.selection = filter
         }
@@ -181,12 +182,16 @@ func sendInput(_ input: Request, window: SCWindow, canvas: ClaudeCanvas? = nil, 
             guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { throw Failure(8, "input_failed") }
             return
         }
+        if nativeChrome && !nativeChromeOwnsPointer(point,pid:pid) { throw Failure(7,"window_changed") }
         let events: [CGEvent?]
         if input.action == "scroll" {
             let horizontal = input.deltaX ?? scrollX
             guard let delta = input.delta, delta.isFinite, horizontal.isFinite,
                   (-maxScroll...maxScroll).contains(delta), (-maxScroll...maxScroll).contains(horizontal) else { throw Failure(8, "invalid_input") }
             events = [CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: horizontal == 0 ? 1 : 2, wheel1: Int32(-delta), wheel2: Int32(-horizontal), wheel3: 0)]
+        } else if nativeChrome {
+            events = [CGEvent(mouseEventSource:source,mouseType:.leftMouseDown,mouseCursorPosition:point,mouseButton:.left),
+                      CGEvent(mouseEventSource:source,mouseType:.leftMouseUp,mouseCursorPosition:point,mouseButton:.left)]
         } else {
             // Address the NSEvent to this window using its unflipped local
             // coordinates. CGEvent's global position alone does not give an
@@ -205,7 +210,7 @@ func sendInput(_ input: Request, window: SCWindow, canvas: ClaudeCanvas? = nil, 
             event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowID))
             event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowID))
             event.setIntegerValueField(.mouseEventClickState, value: 1)
-            event.postToPid(pid)
+            if nativeChrome { event.post(tap:.cghidEventTap) } else { event.postToPid(pid) }
         }
     default: throw Failure(8, "invalid_input")
     }
@@ -216,11 +221,55 @@ func launchClaudeWindow() async throws {
     try verifiedInstall()
     let configuration = NSWorkspace.OpenConfiguration()
     configuration.activates = true
+    if nativeChrome {
+        configuration.createsNewApplicationInstance = true
+        configuration.arguments = ["--user-data-dir=" + nativeChromeProfile, "--no-first-run", "--restore-last-session"]
+        try FileManager.default.createDirectory(atPath: nativeChromeProfile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if let pid = try? claudePIDs().first, let running = NSRunningApplication(processIdentifier: pid) {
+            let element = AXUIElementCreateApplication(pid)
+            if AXIsProcessTrusted() { _ = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue) }
+            running.activate()
+            for _ in 0..<20 {
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return
+        }
+    }
     let application = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
     if AXIsProcessTrusted(), try claudePIDs().contains(application.processIdentifier) {
         let element = AXUIElementCreateApplication(application.processIdentifier)
         _ = AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
+}
+
+@MainActor
+private func chromeInputTargetMetadata() -> [String:Any] {
+    guard nativeChrome else { return [:] }
+    var result: [String:Any] = ["foreground_pid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0]
+    for pid in (try? claudePIDs()) ?? [] {
+        let app = AXUIElementCreateApplication(pid)
+        var focused: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
+        result["pid"] = pid; result["focused_status"] = status.rawValue
+        if let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            let window = focused as! AXUIElement
+            var point: CFTypeRef?, size: CFTypeRef?
+            var origin = CGPoint.zero, extent = CGSize.zero
+            if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &point) == .success,
+               AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &size) == .success,
+               let point, let size, CFGetTypeID(point) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID(),
+               AXValueGetValue(point as! AXValue, .cgPoint, &origin), AXValueGetValue(size as! AXValue, .cgSize, &extent) {
+                result["focused_bounds"] = [origin.x,origin.y,extent.width,extent.height]
+            }
+        }
+        let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]]) ?? []
+        result["visible_windows"] = windows.filter { $0[kCGWindowOwnerPID as String] as? Int32 == pid }.map {
+            ["id":$0[kCGWindowNumber as String] ?? 0,"bounds":$0[kCGWindowBounds as String] ?? [:]]
+        }
+        break
+    }
+    return result
 }
 
 @MainActor
@@ -260,6 +309,7 @@ private func handle(_ input: Request, inputSession: MacWindowInputSession) async
     case "setup-screen", "setup-input", "setup-projects":
         let pane: String
         if input.action == "setup-screen" {
+            if #available(macOS 15.2, *) { SCContentSharingPicker.shared.isActive = false }
             if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
             pane = "com.apple.preference.security?Privacy_ScreenCapture"
         } else if input.action == "setup-input" {
@@ -274,13 +324,25 @@ private func handle(_ input: Request, inputSession: MacWindowInputSession) async
             pane = "com.apple.LoginItems-Settings.extension"
         }
         guard let url = URL(string: "x-apple.systempreferences:" + pane), NSWorkspace.shared.open(url) else { throw Failure(7, "settings_unavailable") }
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first?.activate()
         return ["ok":true]
     case "status":
         let installed = FileManager.default.fileExists(atPath: appURL.path)
         let running = ((try? claudePIDs())?.isEmpty == false)
         var screen = CGPreflightScreenCaptureAccess()
         if #available(macOS 15.2, *) { screen = screen || ClaudePicker.shared.selection != nil }
-        return ["version": (Bundle(url: appURL)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "", "installed": installed, "running": running, "screen": screen, "input": AXIsProcessTrusted(), "input_protocol": 1, "persistent": true, "push_frames": true]
+        return ["version": (Bundle(url: appURL)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "", "installed": installed, "running": running, "screen": screen, "input": AXIsProcessTrusted(), "input_protocol": 1, "persistent": true, "push_frames": true, "foreground": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "", "foreground_pid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0, "input_target":chromeInputTargetMetadata()]
+    case "open-url":
+        guard nativeChrome, let address = input.url, address.utf8.count <= 4096,
+              let url = URL(string: address), ["http","https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host != nil, url.user == nil, url.password == nil else { throw Failure(8,"invalid_input") }
+        try await launchClaudeWindow()
+        let command = Process()
+        command.executableURL = appURL.appendingPathComponent("Contents/MacOS/Google Chrome")
+        command.arguments = ["--user-data-dir=" + nativeChromeProfile, url.absoluteString]
+        command.standardOutput = FileHandle.nullDevice; command.standardError = FileHandle.nullDevice
+        try command.run()
+        return ["ok":true]
     case "launch":
         try await launchClaudeWindow()
         return ["ok": true]
@@ -481,9 +543,9 @@ struct ClaudeWindowService {
         free(sockets)
         GuestDiagnostic.record("window", "started")
         NSApplication.shared.setActivationPolicy(.accessory)
-        MacNativeOpen.shared.install()
+        if !nativeChrome { MacNativeOpen.shared.install() }
         Task { @MainActor in
-            do { try await MacNativeOpen.shared.prepareMetadata() }
+            do { if !nativeChrome { try await MacNativeOpen.shared.prepareMetadata() } }
             catch { GuestDiagnostic.record("files", (error as? Failure)?.message ?? "file_open_metadata_failed") }
         }
         DispatchQueue.global(qos: .userInitiated).async {

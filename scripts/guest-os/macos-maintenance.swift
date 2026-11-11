@@ -6,7 +6,7 @@ import Security
 // Only Apple system settings and its authorization UI can supply a target.
 @MainActor
 enum MacMaintenance {
-    private static let applications: Set<String> = ["com.apple.systempreferences", "com.apple.authorizationhost"]
+    private static let applications: Set<String> = ["com.apple.systempreferences", "com.apple.authorizationhost", "com.apple.SecurityAgent"]
     private static let panes = [
         "projects": "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
         "screen": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
@@ -42,6 +42,37 @@ enum MacMaintenance {
         return SecRequirementCreateWithString("anchor apple and identifier \"\(bundle)\"" as CFString, [], &requirement) == errSecSuccess &&
             SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String: app.processIdentifier] as CFDictionary, [], &code) == errSecSuccess &&
             code != nil && requirement != nil && SecCodeCheckValidity(code!, [], requirement!) == errSecSuccess
+    }
+
+    // macOS 26 can host the front System Settings authorization sheet in
+    // Apple's separate SecurityAgent process. Select only its top visible
+    // system-level panel, with a verified Apple signature.
+    static func targetApplication() -> NSRunningApplication? {
+        guard let front = NSWorkspace.shared.frontmostApplication, verified(front) else { return nil }
+        if front.bundleIdentifier == "com.apple.systempreferences",
+           let agent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.SecurityAgent").first,
+           verified(agent),
+           let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]],
+           windows.contains(where: { $0[kCGWindowOwnerPID as String] as? Int32 == agent.processIdentifier && $0[kCGWindowLayer as String] as? Int == 1000 }) { return agent }
+        return front
+    }
+    static func targetIsCurrent(_ app: NSRunningApplication) -> Bool {
+        targetApplication()?.processIdentifier == app.processIdentifier
+    }
+    static func cursorSurface(_ pid: Int32, bounds: CGRect, layer: Int) -> Bool {
+        guard layer == CGWindowLevelForKey(.cursorWindow), bounds.width <= 64, bounds.height <= 64 else { return false }
+        var code: SecCode?, rule: SecRequirement?
+        return SecRequirementCreateWithString(#"anchor apple and identifier "com.apple.WindowServer""# as CFString, [], &rule) == errSecSuccess &&
+            SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String:pid] as CFDictionary, [], &code) == errSecSuccess &&
+            code != nil && rule != nil && SecCodeCheckValidity(code!, [], rule!) == errSecSuccess
+    }
+    static func backgroundSystemSurface(_ pid: Int32, bounds: CGRect, display: CGRect) -> Bool {
+        guard bounds == display, let app = NSRunningApplication(processIdentifier: pid),
+              let bundle = app.bundleIdentifier, ["com.apple.dock","com.apple.notificationcenterui"].contains(bundle) else { return false }
+        var code: SecCode?, rule: SecRequirement?
+        return SecRequirementCreateWithString("anchor apple and identifier \"\(bundle)\"" as CFString, [], &rule) == errSecSuccess &&
+            SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String:pid] as CFDictionary, [], &code) == errSecSuccess &&
+            code != nil && rule != nil && SecCodeCheckValidity(code!, [], rule!) == errSecSuccess
     }
 
     private static func passwordFocused(_ app: NSRunningApplication, window: CGRect) -> Bool {
@@ -81,7 +112,7 @@ enum MacMaintenance {
             guard let url = URL(string: pane), NSWorkspace.shared.open(url) else { throw Failure(8, "maintenance_open_failed") }
             return ["opened": true]
         }
-        guard operation == "probe", let front = NSWorkspace.shared.frontmostApplication, verified(front) else {
+        guard operation == "probe", let front = targetApplication() else {
             throw Failure(7, "maintenance_foreground_changed")
         }
         guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
@@ -94,12 +125,13 @@ enum MacMaintenance {
                   let bounds = CGRect(dictionaryRepresentation: raw as CFDictionary), bounds.width > 0, bounds.height > 0,
                   (window[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
             let owner = window[kCGWindowOwnerPID as String] as? Int32
+            if cursorSurface(owner ?? -1, bounds: bounds, layer: window[kCGWindowLayer as String] as? Int ?? 0) { continue }
             if owner == front.processIdentifier && bounds.width >= 100 && bounds.height >= 60 {
                 let region = bounds.intersection(display)
                 guard !region.isNull, region.width >= 80, region.height >= 40,
                       !covering.contains(where: { $0.intersects(region) }),
                       let id = window[kCGWindowNumber as String] as? UInt32,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier,
+                      targetIsCurrent(front),
                       try consoleSession() == session else { throw Failure(7, "maintenance_window_obscured") }
                 return ["version": 1, "session": session, "user": NSUserName(), "pid": front.processIdentifier,
                     "window": id, "bundle": front.bundleIdentifier!,
@@ -107,7 +139,7 @@ enum MacMaintenance {
                     "rect": [region.minX, region.minY, region.width, region.height],
                     "display": [display.minX, display.minY, display.width, display.height]]
             }
-            if owner != front.processIdentifier { covering.append(bounds) }
+            if owner != front.processIdentifier, !backgroundSystemSurface(owner ?? -1, bounds: bounds, display: display) { covering.append(bounds) }
         }
         throw Failure(7, "maintenance_window_unavailable")
     }

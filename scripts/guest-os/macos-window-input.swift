@@ -2,6 +2,25 @@ import AppKit
 import ApplicationServices
 import ScreenCaptureKit
 
+// HID delivery lets WindowServer perform Chrome's normal pointer routing.
+// Only the verified foreground Chrome surface may receive a new pointer event.
+@MainActor
+func nativeChromeOwnsPointer(_ point: CGPoint, pid: pid_t) -> Bool {
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+          let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] else { return false }
+    let display = CGDisplayBounds(CGMainDisplayID())
+    for item in windows {
+        guard let raw = item[kCGWindowBounds as String] as? [String:Any], let bounds = CGRect(dictionaryRepresentation: raw as CFDictionary),
+              bounds.contains(point), (item[kCGWindowAlpha as String] as? Double ?? 1)>0,
+              let owner = item[kCGWindowOwnerPID as String] as? Int32 else { continue }
+        let layer = item[kCGWindowLayer as String] as? Int ?? 0
+        if MacMaintenance.cursorSurface(owner,bounds:bounds,layer:layer) || MacMaintenance.backgroundSystemSurface(owner,bounds:bounds,display:display) { continue }
+        if owner == pid { return true }
+        if layer >= 0 { return false }
+    }
+    return false
+}
+
 struct MacInputWindow {
     let app: AXUIElement
     let focused: AXUIElement
@@ -125,6 +144,23 @@ final class MacWindowInputSession {
         let crop = canvas?.cropTop ?? 0
         let point = CGPoint(x: target.origin.x + target.extent.width * x, y: target.origin.y + crop + (target.extent.height - crop) * y)
         let button = phase == "move" ? buttons.keys.sorted().first : input.button
+        if nativeChrome {
+            if phase != "move" && (button == nil || !(0...2).contains(button!) || !(1...3).contains(input.clicks ?? 0)) { throw Failure(8,"invalid_input") }
+            if phase == "up", let button, buttons[button] == nil { return }
+            guard nativeChromeOwnsPointer(point,pid:target.pid) else { throw Failure(7,"window_changed") }
+            let types: [CGEventType] = phase == "move" ? [.leftMouseDragged,.otherMouseDragged,.rightMouseDragged] :
+                phase == "down" ? [.leftMouseDown,.otherMouseDown,.rightMouseDown] : [.leftMouseUp,.otherMouseUp,.rightMouseUp]
+            let type = button.map { types[$0] } ?? .mouseMoved
+            let mouse: CGMouseButton = button == 2 ? .right : button == 1 ? .center : .left
+            guard let event = CGEvent(mouseEventSource:source,mouseType:type,mouseCursorPosition:point,mouseButton:mouse) else { throw Failure(8,"input_failed") }
+            let count = input.clicks ?? button.flatMap { buttons[$0]?.3 } ?? 0
+            event.flags = flags(input); event.setIntegerValueField(.mouseEventClickState,value:Int64(count))
+            if phase == "down", let button { buttons[button]=(target.pid,window.windowID,point,count); Self.pointerOwner=id }
+            if phase == "up", let button { buttons.removeValue(forKey:button); if buttons.isEmpty { Self.pointerOwner=nil } }
+            if phase == "move" { for held in Array(buttons.keys) { buttons[held]=(target.pid,window.windowID,point,count) } }
+            event.post(tap:.cghidEventTap)
+            return
+        }
         let types: [NSEvent.EventType]
         if phase == "move" { types = [.leftMouseDragged, .otherMouseDragged, .rightMouseDragged] }
         else if phase == "down" { types = [.leftMouseDown, .otherMouseDown, .rightMouseDown] }
@@ -177,13 +213,13 @@ final class MacWindowInputSession {
             if stillOwnsWindow(target.0, target.1) { CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)?.postToPid(target.0) }
             if Self.keyOwners[code] == id { Self.keyOwners.removeValue(forKey: code) }
         }
-        for (button, target) in buttons where !(button == 0 && press != nil) && stillOwnsWindow(target.0, target.1) {
+        for (button, target) in buttons where !(button == 0 && press != nil) && (nativeChrome || stillOwnsWindow(target.0, target.1)) {
             let type: CGEventType = button == 0 ? .leftMouseUp : button == 2 ? .rightMouseUp : .otherMouseUp
             let mouse: CGMouseButton = button == 0 ? .left : button == 2 ? .right : .center
             if let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: target.2, mouseButton: mouse) {
                 event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(target.1))
                 event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(target.1))
-                event.postToPid(target.0)
+                if nativeChrome { event.post(tap:.cghidEventTap) } else { event.postToPid(target.0) }
             }
         }
         keys.removeAll(); pressedCodes.removeAll(); buttons.removeAll(); press = nil; composition = nil

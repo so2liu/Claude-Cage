@@ -66,6 +66,11 @@ if [[ ! -e $app ]]; then ditto 'Cage Guest Window.app' "$app"; fi
 codesign --verify --strict -R '=identifier "dev.cage.GuestClaudeWindow"' "$app"
 chmod -R a+rX,go-w "$app"
 install -m 755 register-macos-claude-window.sh /usr/local/libexec/cage-register-claude-window
+install -m 755 register-macos-chrome-window.sh /usr/local/libexec/cage-register-chrome-window
+chrome_app='/Applications/Cage Chrome Window.app'
+if [[ ! -e $chrome_app ]]; then ditto 'Cage Chrome Window.app' "$chrome_app"; fi
+codesign --verify --strict -R '=identifier "dev.cage.GuestChromeWindow"' "$chrome_app"
+chmod -R a+rX,go-w "$chrome_app"
 clipboard_app='/Applications/Cage Guest Clipboard.app'
 if [[ ! -e $clipboard_app ]]; then ditto 'Cage Guest Clipboard.app' "$clipboard_app"; fi
 codesign --verify --deep --strict -R '=identifier "dev.cage.GuestClipboard"' "$clipboard_app"
@@ -76,5 +81,6 @@ install -m 755 register-macos-browser.sh /usr/local/libexec/cage-register-browse
 # login. launchd reads it during login, including while Setup Assistant runs.
 cd /
 sudo -Hu $ordinary /usr/local/libexec/cage-register-claude-window --prepare
+sudo -Hu $ordinary /usr/local/libexec/cage-register-chrome-window --prepare
 sudo -Hu $ordinary /usr/local/libexec/cage-register-clipboard --prepare
 sudo -Hu $ordinary /usr/local/libexec/cage-register-browser --prepare

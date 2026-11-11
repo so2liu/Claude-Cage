@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sylvinus/agent-vm/internal/cage"
@@ -343,6 +344,10 @@ func (s *Server) beginGuestInstall(w http.ResponseWriter, r *http.Request, in gu
 		var cmd *exec.Cmd
 		if install.System == guestos.MacOS {
 			cmd = exec.CommandContext(s.operationContext(), s.exe, "guest-os", "macos", "install")
+			// Let the child's signal-aware context cancel its downloader process
+			// group and VZ operation before falling back to a forced termination.
+			cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+			cmd.WaitDelay = 10 * time.Second
 			cmd.Env = append(os.Environ(), cage.ConfigEnv+"="+s.configPath, "CAGE_MACOS_ACCOUNT="+credential.Username)
 			cmd.Stdin = strings.NewReader(credential.Password)
 		} else {

@@ -66,7 +66,7 @@ func TestMacOSStopStartPreservesUserNetworkIntent(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("paused_%t", paused), func(t *testing.T) {
 			guest := newMacWorkspaceGuest(t, func(_ ssh.Channel, command string) (uint32, bool) {
-				return 0, strings.Contains(command, "uname -s")
+				return 0, strings.Contains(command, "uname -s") || strings.Contains(command, "/usr/sbin/systemsetup") || strings.Contains(command, "AppleLocale")
 			})
 			s := guest.s
 			s.exe = filepath.Join(t.TempDir(), "cage")

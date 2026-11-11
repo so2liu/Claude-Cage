@@ -19,10 +19,15 @@ func (s *Server) registerMacOSClaudeRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/macos/claude/window", s.macOSClaudeWindow)
 	mux.HandleFunc("GET /api/macos/claude/connection", s.macOSWindowConnection)
 	mux.HandleFunc("GET /api/macos/claude/frames", s.macOSWindowFrames)
+	mux.HandleFunc("POST /api/macos/chrome/window", s.macOSClaudeWindow)
+	mux.HandleFunc("GET /api/macos/chrome/connection", s.macOSWindowConnection)
+	mux.HandleFunc("GET /api/macos/chrome/frames", s.macOSWindowFrames)
 }
 
 type macOSWindowRequest struct {
+	Chrome     bool               `json:"-"`
 	Action     string             `json:"action"`
+	URL        string             `json:"url,omitempty"`
 	Project    string             `json:"project,omitempty"`
 	Nonce      string             `json:"nonce,omitempty"`
 	Width      int                `json:"width,omitempty"`
@@ -80,6 +85,7 @@ func (s *Server) macOSClaudeWindow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "客机窗口操作或尺寸无效", http.StatusBadRequest)
 		return
 	}
+	input.Chrome = strings.HasPrefix(r.URL.Path, "/api/macos/chrome/")
 	s.macOSWindowRPC(w, r, macOSWindowClientRequest(input, false))
 }
 
@@ -91,7 +97,7 @@ var (
 func (s *Server) macOSWindowRPC(w http.ResponseWriter, r *http.Request, input macOSWindowRequest) {
 	var reply []byte
 	var err error
-	if input.Action == "status" {
+	if input.Action == "status" && !input.Chrome {
 		reply, err = s.desktopStatus.read(r.Context(), s.lifetimeContext(), func(ctx context.Context) ([]byte, error) { return s.macOSWindowCall(ctx, input) })
 	} else {
 		// Input and capture retain their own live guest ownership validation.
@@ -138,7 +144,7 @@ func (s *Server) macOSWindowCall(parent context.Context, input macOSWindowReques
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	command := `exec /usr/bin/nc -w ` + socketWait + ` -U "$HOME/Library/Caches/dev.cage.GuestClaudeWindow/window.sock"`
+	command := nativeWindowSocketCommand(input.Chrome, socketWait)
 	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", command)
 	cmd.Stdin = bytes.NewReader(append(body, '\n'))
 	reader, err := cmd.StdoutPipe()
@@ -160,4 +166,13 @@ func (s *Server) macOSWindowCall(parent context.Context, input macOSWindowReques
 		return nil, errors.New("请先登录虚拟 Mac 的普通账户，并完成 Apple 设置助理。")
 	}
 	return reply, nil
+}
+
+// Targets are selected by registered routes, never by a client-provided path.
+func nativeWindowSocketCommand(chrome bool, wait string) string {
+	label := "dev.cage.GuestClaudeWindow"
+	if chrome {
+		label = "dev.cage.GuestChromeWindow"
+	}
+	return `exec /usr/bin/nc -w ` + wait + ` -U "$HOME/Library/Caches/` + label + `/window.sock"`
 }

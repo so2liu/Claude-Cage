@@ -268,15 +268,15 @@ func (s *Server) nativeBrowserVNC(w http.ResponseWriter, r *http.Request) {
 		var err error
 		switch input["action"] {
 		case "frame":
-			data, err = client.request(ctx, "GET", "/frame", input)
+			var next windowsWindowFrame
+			next, err = readNativeBrowserFrame(ctx, func() ([]byte, error) {
+				return client.request(ctx, "GET", "/frame", input)
+			})
 			if err == nil {
-				var next windowsWindowFrame
-				if err = json.Unmarshal(data, &next); err == nil {
-					if !next.Unchanged {
-						current = next
-					}
-					*output.(*windowsWindowFrame) = next
+				if !next.Unchanged {
+					current = next
 				}
+				*output.(*windowsWindowFrame) = next
 			}
 			return err
 		case "pointer", "key":

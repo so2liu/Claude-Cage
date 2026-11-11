@@ -6,14 +6,21 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
 	"time"
 )
 
 func validMacOSWindowRequest(input macOSWindowRequest) bool {
 	switch input.Action {
-	case "status", "launch", "stop", "request-screen", "request-input", "frame", "text", "key", "click", "scroll", "pointer", "ime", "input-reset":
+	case "open-url", "status", "launch", "stop", "request-screen", "request-input", "frame", "text", "key", "click", "scroll", "pointer", "ime", "input-reset":
 	default:
 		return false
+	}
+	if input.Action == "open-url" {
+		u, err := url.Parse(input.URL)
+		if err != nil || len(input.URL) > 4096 || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			return false
+		}
 	}
 	if len(input.After) > 128 || len(input.Geometry) > 128 || input.Width < 0 || input.Width > 2560 || input.Height < 0 || input.Height > 1600 || input.Scale < 0 || input.Scale > 2 {
 		return false
@@ -85,7 +92,7 @@ func (s *Server) macOSWindowConnection(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	stop := context.AfterFunc(s.lifetimeContext(), func() { cancel(); ws.Close() })
 	defer stop()
-	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", `exec /usr/bin/nc -U "$HOME/Library/Caches/dev.cage.GuestClaudeWindow/window.sock"`)
+	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", nativeWindowSocketCommand(r.URL.Path == "/api/macos/chrome/connection" || r.URL.Path == "/api/macos/chrome/frames", "30"))
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return

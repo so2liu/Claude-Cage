@@ -20,16 +20,21 @@ func guestGUIProbeCommand(ctx context.Context, profile, administrator, user stri
 	}
 	rootScript := `set -eu
 app='/Applications/Cage Guest Window.app'
+identifier=dev.cage.GuestClaudeWindow
+if [ -d '/Applications/Cage Chrome Window.app' ]; then
+    app='/Applications/Cage Chrome Window.app'
+    identifier=dev.cage.GuestChromeWindow
+fi
 for file in "$app" "$app/Contents" "$app/Contents/MacOS" "$app/Contents/MacOS/CageGuestWindow"; do
     test ! -L "$file" && test "$(/usr/bin/stat -f %u "$file")" = 0 || exit 72
     mode=$(/usr/bin/stat -f %Lp "$file")
     test "$((0$mode & 022))" = 0 || exit 72
 done
-/usr/bin/codesign --verify --strict -R '=identifier "dev.cage.GuestClaudeWindow"' "$app" || exit 72
+/usr/bin/codesign --verify --strict -R "=identifier \"$identifier\"" "$app" || exit 72
 uid=$(/usr/bin/id -u ` + shellescape.Quote(user) + `)
 test "$(/usr/bin/stat -f %u /dev/console)" = "$uid" || exit 73
 exec /bin/launchctl asuser "$uid" /usr/bin/sudo -Hu ` + shellescape.Quote(user) + ` /usr/bin/env -i HOME=` + shellescape.Quote("/Users/"+user) + ` PATH=/usr/bin:/bin ` +
-		shellescape.QuoteCommand(append([]string{"/Applications/Cage Guest Window.app/Contents/MacOS/CageGuestWindow"}, arguments...))
+		`"$app/Contents/MacOS/CageGuestWindow" ` + shellescape.QuoteCommand(arguments)
 	// An askpass helper keeps SSH stdin available to the probe. Its private
 	// script contains only the existing credential's path, and is removed when
 	// this invocation ends. Credentials remain inside the guest.

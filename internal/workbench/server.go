@@ -449,7 +449,13 @@ func (s *Server) handler() http.Handler {
 			http.Error(w, "环境尚未就绪", 409)
 			return
 		}
-		jsonReply(w, map[string]any{"password": s.credentials.VNCPassword, "display_scale": s.credentials.DisplayScale})
+		density := s.credentials.DisplayScale
+		if s.macosGuest != nil {
+			// The guest's persistent Chrome service uses displayScale: 1.
+			// Linux framebuffer credentials are not populated for native Macs.
+			density = 1
+		}
+		jsonReply(w, map[string]any{"password": s.credentials.VNCPassword, "display_scale": density})
 	})
 	mux.HandleFunc("GET /api/vnc", s.vnc)
 	mux.HandleFunc("GET /api/claude-desktop", s.claudeDesktopStatus)

@@ -108,6 +108,10 @@ function App() {
     [browserTabLayout, setBrowserTabLayout] = useState(
       readLocal(clientStorageKey("cage-browser-tab-layout"), "horizontal"),
     ),
+    [browserZoom, setBrowserZoom] = useState(() => {
+      const value = readLocal(clientStorageKey("cage-browser-zoom"), null);
+      return [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25].includes(value) ? value : null;
+    }),
     [selectedProject, setSelectedProject] = useState(""),
     [savedTabs, setSavedTabs] = useState(readLocal(clientStorageKey("cage-tab-layout"), {})),
     [privateTabMetadata, setPrivateTabMetadata] = useState({}),
@@ -373,6 +377,13 @@ function App() {
     incognito = Boolean(current?.incognito),
   ) => {
     browserDismissed.current = false;
+    if (macGuest) {
+      const opened = await action("/macos/chrome/window", { action: "open-url", url });
+      if (!opened) return;
+      const result = tabs.find(tab => tab.kind === "web") || await action("/browser/new", { url: "about:blank", incognito: false });
+      if (result) { setDesktopOpen(false); setHome(false); setTabs(list => list.some(tab => tab.id === result.id) ? list : [...list, { ...result, kind: "web", url: "about:blank" }]); setActive(result.id); }
+      return result;
+    }
     const result = await action("/browser/new", { url, incognito });
     if (result) {
       setDesktopOpen(false);
@@ -1444,6 +1455,9 @@ function App() {
               <>
                 {!desktopOpen && !showHome && webPanes.length > 0 && (
                   <section className={`pane-lane browser-lane ${browserTabLayout === "vertical" ? "vertical-browser" : ""} ${dualBrowser ? "" : "split-" + paneSide(webPanes[0].id)}`}>
+                    {macGuest && liveBrowser?.kind === "web" ? <MacOSClaudeWindow chrome visible={!settingsOpen} keyboard={status.keyboard} remoteRef={remote}
+                      onStatus={notify} onFallback={(text, message) => setTransfer({ text, message })} onConfirm={confirm}
+                      sidebarCollapsed={sidebarCollapsed} onExpand={() => persist("cage-sidebar-collapsed", false, setSidebarCollapsed)} /> : <>
                     {browserTabLayout === "vertical" && <BrowserTabRail tabs={browserTabs} metadata={metadata}
                       active={liveBrowser?.id} ready={status.ready} busy={busy} splitDrag={splitDrag}
                       sidebarButton={sidebarButton(paneSide(webPanes[0].id))}
@@ -1460,6 +1474,8 @@ function App() {
                       {status.ready && liveBrowser?.kind === "browser-settings" && <BrowserSettingsPage
                         key={`${liveBrowser.id}:${browserSettingsRevision}`} tab={liveBrowser} tabs={tabs}
                         currentHome={settings.browser_home_url} layout={browserTabLayout}
+                        zoom={browserZoom ?? (status.guest_system === "macos" ? 0.8 : 1)}
+                        onZoomChange={value => persist("cage-browser-zoom", Number(value), setBrowserZoom)}
                         onLayoutChange={value => persist("cage-browser-tab-layout", value, setBrowserTabLayout)}
                         onSectionChange={openBrowserSettings}
                         onSaved={next => setSettings(previous => ({ ...previous, ...next }))}
@@ -1467,6 +1483,7 @@ function App() {
                       {status.ready && <RemoteView ref={remote} visible={Boolean(liveBrowserVisible && !settingsOpen && liveBrowser?.kind !== "browser-settings")}
                         copyScope={webPanes.map(tab => `${tab.id}:${tab.document || ""}`).join("|")}
                         focused={dualBrowser || liveBrowser?.id === active} keyboard={status.keyboard}
+                        zoom={browserZoom ?? (status.guest_system === "macos" ? 0.8 : 1)}
                         guestPlatform={status.guest_system} systemClipboard={browser.capabilities?.systemClipboard !== false}
                         tabId={liveBrowser?.id} onStatus={notify}
                         onFallback={(text, message) => setTransfer({ text, message })} />}
@@ -1477,6 +1494,7 @@ function App() {
                       </div>}
                       {status.ready && !splitReady && <div className="view-overlay">正在调整浏览器布局…</div>}
                     </div>
+                    </>}
                   </section>
                 )}
                 {tabs.filter(t => t.kind === "terminal").map(tab => {

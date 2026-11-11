@@ -173,6 +173,7 @@ func nativeComponentTarget(source, system string) string {
 		"macos-browser.mjs":               "/usr/local/libexec/cage-macos-browser.mjs",
 		"cage-macos-editor":               "/usr/local/libexec/cage-macos-editor",
 		"register-macos-claude-window.sh": "/usr/local/libexec/cage-register-claude-window",
+		"register-macos-chrome-window.sh": "/usr/local/libexec/cage-register-chrome-window",
 		"register-macos-clipboard.sh":     "/usr/local/libexec/cage-register-clipboard",
 		"register-macos-browser.sh":       "/usr/local/libexec/cage-register-browser",
 		"macos-cli.py":                    "/usr/local/libexec/cage-cli/macos-cli.py",

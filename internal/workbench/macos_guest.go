@@ -31,7 +31,7 @@ func macOSWorkbenchRoute(path string) bool {
 	case "/api/macos/first-setup", "/api/appearance/codex", "/api/macos/project-approval", "/api/macos/exit-policy", "/api/macos/login", "/api/macos/maintenance":
 		return true
 	}
-	return strings.HasPrefix(path, "/api/macos/claude/") || strings.HasPrefix(path, "/api/macos-browser/")
+	return strings.HasPrefix(path, "/api/macos/chrome/") || strings.HasPrefix(path, "/api/macos/claude/") || strings.HasPrefix(path, "/api/macos-browser/")
 }
 
 func macOSInstanceRunning(instanceDir string) bool {
@@ -150,6 +150,16 @@ func (s *Server) startMacOSGuest() error {
 		return err
 	}
 	if err := s.attachMacOSGuest(); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(s.configPath)
+	if err != nil {
+		return err
+	}
+	if err := s.closeProxyGate("正在应用 macOS 系统设置，外网等待重新检查"); err != nil {
+		return err
+	}
+	if err := s.applyMacOSGuestSettings(s.operationContext(), cfg); err != nil {
 		return err
 	}
 	return s.checkNetworkIfWanted()

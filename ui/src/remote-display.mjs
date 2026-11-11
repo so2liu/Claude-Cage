@@ -2,11 +2,11 @@
 // while noVNC fits the resulting framebuffer into the available CSS area.
 export function displayGeometry({ width, height }, { desktop = false, zoom = 1, density = 2 } = {}) {
   if (width < (desktop ? 320 : 160) || height < 240) return null;
-  const scale = density === 1.5 ? 1.5 : 2;
+  const scale = Number.isFinite(density) && density >= 1 && density <= 8 ? density : 2;
   const ratio = scale / zoom;
   const limit = Math.min(1, 8192 / (width * ratio), 8192 / (height * ratio));
   return {
-    width: Math.max(desktop ? 320 : 160 * scale, Math.floor(width * ratio * limit)),
+    width: Math.max(desktop ? 320 : Math.max(320, 160 * scale), Math.floor(width * ratio * limit)),
     height: Math.max(desktop ? 240 : 240 * scale, Math.floor(height * ratio * limit)),
   };
 }

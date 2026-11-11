@@ -761,6 +761,11 @@ func (s *Server) runSafetyCheck() (returned error) {
 	if err != nil {
 		return err
 	}
+	if s.macosGuest != nil {
+		if err := s.resetMacOSDNSCache(ctx); err != nil {
+			return err
+		}
+	}
 	granted = true
 	s.publishGate(state)
 	s.mu.Lock()

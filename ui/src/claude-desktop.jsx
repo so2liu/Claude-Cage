@@ -17,17 +17,17 @@ import "./claude-desktop.css";
 
 const desktopZooms = [0.75, 0.9, 1, 1.1, 1.25, 1.5];
 
-export function useDesktopZoom() {
+export function useDesktopZoom(storageKey = "cage-desktop-zoom") {
   const [zoom, setZoom] = useState(() => {
     try {
-      const value = Number(localStorage.getItem("cage-desktop-zoom"));
+      const value = Number(localStorage.getItem(storageKey));
       return desktopZooms.includes(value) ? value : 1;
     } catch { return 1; }
   });
   return [zoom, setZoom];
 }
 
-export function DesktopToolbar({ desktop, platform, zoom, setZoom, onConfirm, onStop, busy, refresh, sidebarCollapsed, onExpand, children }) {
+export function DesktopToolbar({ title = "Claude Desktop", storageKey = "cage-desktop-zoom", desktop, platform, zoom, setZoom, onConfirm, onStop, busy, refresh, sidebarCollapsed, onExpand, children }) {
   return (
       <header className="claude-desktop-toolbar">
         {sidebarCollapsed && (
@@ -40,7 +40,7 @@ export function DesktopToolbar({ desktop, platform, zoom, setZoom, onConfirm, on
           </button>
         )}
         <Monitor size={18} />
-        <strong>Claude Desktop</strong>
+        <strong>{title}</strong>
         <span className="desktop-version">
           {desktop?.version ? `v${desktop.version}` : platform}
         </span>
@@ -52,7 +52,7 @@ export function DesktopToolbar({ desktop, platform, zoom, setZoom, onConfirm, on
             <InlineSelect aria-label="Desktop 显示大小" value={zoom} onValueChange={(next) => {
               const value = Number(next);
               setZoom(value);
-              try { localStorage.setItem("cage-desktop-zoom", String(value)); } catch { /* Session-only preference. */ }
+              try { localStorage.setItem(storageKey, String(value)); } catch { /* Session-only preference. */ }
             }}>
               {desktopZooms.map((value) => <option key={value} value={value}>{Math.round(value * 100)}%{value === 1 ? "（默认）" : ""}</option>)}
             </InlineSelect>
@@ -65,7 +65,7 @@ export function DesktopToolbar({ desktop, platform, zoom, setZoom, onConfirm, on
             onClick={async () => {
               if (
                 await onConfirm({
-                  title: "关闭 Claude Desktop？",
+                  title: `关闭 ${title}？`,
                   body: "请先保存应用内的工作。浏览器和 Cage 终端会继续运行。",
                   confirm: "关闭应用",
                 })

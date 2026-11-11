@@ -642,3 +642,97 @@ nativeUI("headed Chrome exposes owned window proof and CDP shortcuts alone do no
   assert.equal(after.native.document, before.native.document);
   assert.equal(after.native.id, one.id);
 });
+
+test("JPEG dimensions identify clipped Mac compositor surfaces without trusting requested size", async () => {
+  const { browserJPEGDimensions } = await import("../windows-browser.mjs");
+  const header = (width, height, marker = 0xc0) => Buffer.from([
+    0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0,
+    0xff, marker, 0, 17, 8, height >> 8, height & 255, width >> 8, width & 255,
+    3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xd9,
+  ]);
+  assert.deepEqual(browserJPEGDimensions(header(2064, 1390).toString("base64")), { width: 2064, height: 1390 });
+  assert.deepEqual(browserJPEGDimensions(header(2064, 1476, 0xc2).toString("base64")), { width: 2064, height: 1476 });
+  for (const data of [Buffer.from("invalid"), header(64, 48).subarray(0, 18), Buffer.from([0xff,0xd8,0xff,0xc0,0,0])])
+    assert.equal(browserJPEGDimensions(data.toString("base64")), null);
+});
+
+integration("Mac resized bitmap dimensions match metadata across repeated viewer reconnects", async t => {
+  if (process.env.CAGE_BROWSER_TEST_PLATFORM !== "darwin") return t.skip("Mac compositor resize");
+  const { browserJPEGDimensions } = await import("../windows-browser.mjs");
+  const f = await fixture(t, { networkMode: "packet" });
+  await f.open("/resize-surface");
+  for (let i = 0; i < 24; i++) {
+    const size = { width: i % 2 ? 2064 : 2066, height: i % 2 ? 1476 : 1478 };
+    await f.call("resize", size);
+    const frame = await f.call("frame", {}, "GET");
+    assert.deepEqual(browserJPEGDimensions(frame.jpeg), { width: frame.width, height: frame.height });
+    assert.deepEqual({ width: frame.width, height: frame.height }, size);
+  }
+});
+
+integration("Mac slow fallback keeps its capture alive until the frame is acknowledged", async t => {
+  if (process.env.CAGE_BROWSER_TEST_PLATFORM !== "darwin") return t.skip("Mac compositor fallback");
+  const { browserJPEGDimensions } = await import("../windows-browser.mjs");
+  const f = await fixture(t, { networkMode: "packet" });
+  const one = await f.open("/slow-compositor");
+  const originalSession = f.context().newCDPSession.bind(f.context());
+  const stale = Buffer.from([0xff,0xd8,0xff,0xc0,0,17,8,0,40,0,64,3,1,0x22,0,2,0x11,1,3,0x11,1,0xff,0xd9]).toString("base64");
+  f.context().newCDPSession = async page => {
+    const session = await originalSession(page), on = session.on.bind(session), off = session.off.bind(session), listeners = new Map();
+    session.on = (name, listener) => {
+      if (name !== "Page.screencastFrame") return on(name, listener);
+      const wrapped = frame => listener({ ...frame, data: stale });
+      listeners.set(listener, wrapped); return on(name, wrapped);
+    };
+    session.off = (name, listener) => off(name, listeners.get(listener) || listener);
+    return session;
+  };
+  const screenshot = one.page.screenshot.bind(one.page);
+  one.page.screenshot = async options => { await new Promise(resolve => setTimeout(resolve, 1800)); return screenshot(options); };
+  const frame = await f.call("frame", {}, "GET");
+  assert.deepEqual(browserJPEGDimensions(frame.jpeg), { width: frame.width, height: frame.height });
+});
+
+integration("Mac headed browser keeps a native window and routes actual pointer movement", async t => {
+  if (process.env.CAGE_BROWSER_TEST_PLATFORM !== "darwin" || process.env.CAGE_BROWSER_TEST_HEADED !== "1") return t.skip("headed Mac guest acceptance");
+  const f = await fixture(t, { networkMode: "packet" });
+  const one = await f.open("/native-gui-input");
+  assert.equal(f.launchOptions().headless, false);
+  const session = await one.page.context().newCDPSession(one.page);
+  const window = await session.send("Browser.getWindowForTarget");
+  assert(window.windowId > 0);
+  assert.equal(window.bounds.windowState, "normal");
+  await one.page.evaluate(() => { window.pointerMoves = []; document.addEventListener("mousemove", event => window.pointerMoves.push({ x: event.clientX, y: event.clientY, trusted: event.isTrusted })); });
+  const frame = await f.call("frame", {}, "GET");
+  for (const [x,y] of [[100,100],[200,120],[250,150]]) await f.call("input", { kind:"pointer",target:frame.target,x:x*2,y:y*2,mask:0 });
+  const moves = await one.page.evaluate(() => window.pointerMoves);
+  assert(moves.length >= 3);
+  assert.deepEqual(moves.at(-1), { x:250,y:150,trusted:true });
+  await session.detach();
+});
+
+integration("Mac frames preserve full viewport content after compositor updates", async t => {
+  if (process.env.CAGE_BROWSER_TEST_PLATFORM !== "darwin") return t.skip("Mac compositor content");
+  const f = await fixture(t, { networkMode: "packet", displayScale: 1 });
+  const one = await f.open("/viewport-content");
+  await one.page.setContent('<style>body{margin:0;background:#ff0000}#right{position:fixed;right:0;top:0;width:25vw;height:100vh;background:#0000ff}#center{position:fixed;left:45vw;top:0;width:10vw;height:100vh;background:#00ff00}</style><div id=right></div><div id=center></div>');
+  for (const width of [1000, 1552, 1940, 1250]) {
+    await f.call("resize", { width, height: 900 });
+    await one.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    for (let i = 0; i < 4; i++) {
+      await one.page.evaluate(i => document.body.dataset.frame = String(i), i);
+      const frame = await f.call("frame", {}, "GET");
+      const pixels = await one.page.evaluate(async jpeg => {
+        const blob = await (await fetch('data:image/jpeg;base64,' + jpeg)).blob();
+        const bitmap = await createImageBitmap(blob), canvas = document.createElement('canvas');
+        canvas.width = bitmap.width; canvas.height = bitmap.height;
+        const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0);
+        return [0.1,0.5,0.9].map(x => [...ctx.getImageData(Math.floor(canvas.width*x), Math.floor(canvas.height/2), 1, 1).data].slice(0,3));
+      }, frame.jpeg);
+      for (const [index, channel] of [[0,0],[1,1],[2,2]]) {
+        assert(pixels[index][channel] > 220 && pixels[index].filter((_, n) => n !== channel).every(v => v < 30), JSON.stringify({width,i,pixels}));
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+});

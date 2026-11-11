@@ -10,6 +10,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$dest/project"
 bash "$src/build-macos-project-access.sh" "$dest/project/CageProjectAccess.app"
 bash "$src/build-macos-claude-window.sh" "$dest/Cage Guest Window.app"
+bash "$src/build-macos-claude-window.sh" "$dest/Cage Chrome Window.app" chrome
 bash "$src/build-macos-clipboard.sh" "$dest/Cage Guest Clipboard.app"
 xcrun clang -arch arm64 -O2 -fobjc-arc -framework Foundation "$src/macos-project-terminal.m" -o "$dest/project/cage-macos-terminal"
 codesign -f -s "${CAGE_SIGNING_IDENTITY:--}" "$dest/project/cage-macos-terminal"
@@ -26,7 +27,7 @@ xcrun clang -arch arm64 -mmacosx-version-min=14.0 -O2 -fobjc-arc -framework Foun
     "$src/macos-setup-account.m" -o "$dest/cage-finish-initial-setup"
 xcrun clang -arch arm64 -O2 "$src/macos-ipv6-check.c" -o "$dest/cage-macos-ipv6-check"
 bash "$src/package-macos-browser.sh" "$dest/native-browser"
-for f in prepare-macos-media.sh macos-cli.py prepare-macos-cli-kit.sh install-macos-cli.sh claude-desktop-macos.sh install-macos-browser.sh install-macos-node.sh install-macos-project-tools.sh register-macos-claude-window.sh register-macos-clipboard.sh register-macos-browser.sh macos-browser.mjs cage-macos-editor macos-fuse-media.sh provision-macos-workbench.sh; do
+for f in prepare-macos-media.sh macos-cli.py prepare-macos-cli-kit.sh install-macos-cli.sh claude-desktop-macos.sh install-macos-browser.sh install-macos-node.sh install-macos-project-tools.sh register-macos-claude-window.sh register-macos-chrome-window.sh register-macos-clipboard.sh register-macos-browser.sh macos-browser.mjs cage-macos-editor macos-fuse-media.sh provision-macos-workbench.sh; do
     cp "$src/$f" "$dest/"
 done
 cp "$src/../../internal/cage/claude-account.py" "$src/../../internal/workbench/"{cli_channel.py,cli_channel.resume.md,claude_account_resume.md} "$dest/"

@@ -85,8 +85,8 @@ enum MacSetupPassword {
     }
 
     static func select(windows: [Window], pid: pid_t, bundle: String, display: CGRect, accessibility: Bool) throws -> Window {
-        guard ["com.apple.systempreferences", "com.apple.authorizationhost"].contains(bundle),
-              let index = windows.firstIndex(where: { $0.pid == pid && $0.layer == 0 && $0.bounds.width >= 80 && $0.bounds.height >= 40 }) else {
+        guard ["com.apple.systempreferences", "com.apple.authorizationhost", "com.apple.SecurityAgent"].contains(bundle),
+              let index = windows.firstIndex(where: { $0.pid == pid && ($0.layer == 0 || bundle == "com.apple.SecurityAgent" && $0.layer == 1000) && $0.bounds.width >= 80 && $0.bounds.height >= 40 }) else {
             throw Failure(7, "setup_password_window_unavailable")
         }
         let target = windows[index]
@@ -130,8 +130,8 @@ enum MacSetupPassword {
     static func probe() throws -> [String: Any] {
         try requireGuest()
         let session = try consoleSession()
-        guard let front = NSWorkspace.shared.frontmostApplication, let bundle = front.bundleIdentifier,
-              ["com.apple.systempreferences", "com.apple.authorizationhost"].contains(bundle), signed(front, bundle: bundle) else {
+        guard let front = MacMaintenance.targetApplication(), let bundle = front.bundleIdentifier,
+              ["com.apple.systempreferences", "com.apple.authorizationhost", "com.apple.SecurityAgent"].contains(bundle), signed(front, bundle: bundle) else {
             throw Failure(7, "setup_password_foreground_changed")
         }
         guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
@@ -144,7 +144,7 @@ enum MacSetupPassword {
                   let rectangle = item[kCGWindowBounds as String] as? [String: Any], let bounds = CGRect(dictionaryRepresentation: rectangle as CFDictionary),
                   bounds.width > 0, bounds.height > 0, (item[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let layer = item[kCGWindowLayer as String] as? Int else { return nil }
-            var surface = false
+            var surface = MacMaintenance.cursorSurface(pid, bounds: bounds, layer: layer)
             if layer > 0, abs(bounds.minX - display.minX) < 1, abs(bounds.minY - display.minY) < 1,
                abs(bounds.width - display.width) < 1, abs(bounds.height - display.height) < 1 {
                 if let cached = trustedSurfaces[pid] { surface = cached }
@@ -159,7 +159,7 @@ enum MacSetupPassword {
         let accessibility = AXIsProcessTrusted()
         let target = try select(windows: windows, pid: front.processIdentifier, bundle: bundle, display: display, accessibility: accessibility)
         let focused = accessibility && passwordFocused(front, window: target.bounds)
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier,
+        guard MacMaintenance.targetIsCurrent(front),
               try consoleSession() == session else { throw Failure(7, "setup_password_foreground_changed") }
         return ["version": 1, "session": session, "user": NSUserName(), "pid": front.processIdentifier,
                 "window": target.id, "bundle": bundle, "rect": [target.bounds.minX, target.bounds.minY, target.bounds.width, target.bounds.height],

@@ -62,11 +62,6 @@ func installMacWorkbench(ctx context.Context, profile, state string, l *vm.Lima)
 	if err := os.MkdirAll(cache, 0700); err != nil {
 		return err
 	}
-	local := func(name string, args ...string) error {
-		cmd := exec.CommandContext(ctx, name, args...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		return cmd.Run()
-	}
 	media := i.Media
 	if media == "" {
 		media = filepath.Join(cache, "MacOS.ipsw")
@@ -78,7 +73,7 @@ func installMacWorkbench(ctx context.Context, profile, state string, l *vm.Lima)
 	}
 	fmt.Fprintln(os.Stdout, "正在准备客机应用和开发工具…")
 	fmt.Fprintln(os.Stdout, "CAGE_GUEST_STAGE macos media")
-	if err := local("/bin/bash", filepath.Join(kit, "prepare-macos-media.sh"), cache); err != nil {
+	if err := guestos.PrepareMacOSMedia(ctx, profile, kit, cache, false, os.Stdout, os.Stderr); err != nil {
 		return fmt.Errorf("准备客机应用失败：%w", err)
 	}
 	fmt.Fprintln(os.Stdout, "正在恢复虚拟 Mac…")

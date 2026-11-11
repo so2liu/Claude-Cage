@@ -1,12 +1,17 @@
 // Capture one visible Claude Desktop window to stdout inside a Cage macOS VM.
 // Build with swiftc -parse-as-library -target arm64-apple-macos14.0.
 import AppKit
+import ApplicationServices
 import ImageIO
 import ScreenCaptureKit
 import Security
 import UniformTypeIdentifiers
 
-private let bundleID = "com.anthropic.claudefordesktop"
+let nativeChrome = CommandLine.arguments.contains("--chrome")
+let nativeChromeProfile = NSHomeDirectory() + "/Library/Application Support/Cage/NativeChrome"
+let nativeAppPath = nativeChrome ? "/Applications/Google Chrome.app" : "/Applications/Claude.app"
+let nativeAppBundle = nativeChrome ? "com.google.Chrome" : "com.anthropic.claudefordesktop"
+private let bundleID = nativeAppBundle
 
 struct Failure: Error {
     let code: Int32
@@ -38,8 +43,9 @@ func requireGuest() throws {
 
 func claudeSigningRequirement() throws -> SecRequirement {
     let expression = #"anchor apple generic and identifier "com.anthropic.claudefordesktop" and certificate leaf[subject.OU] = "Q6L2SF6YDW" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#
+    let selected = nativeChrome ? #"anchor apple generic and identifier "com.google.Chrome" and certificate leaf[subject.OU] = "EQHXZ8M8AV""# : expression
     var requirement: SecRequirement?
-    guard SecRequirementCreateWithString(expression as CFString, [], &requirement) == errSecSuccess, let requirement else {
+    guard SecRequirementCreateWithString(selected as CFString, [], &requirement) == errSecSuccess, let requirement else {
         throw Failure(5, "identity_error: Could not construct the Claude signing requirement.")
     }
     return requirement
@@ -53,13 +59,23 @@ func claudePIDs() throws -> Set<pid_t> {
           attributes.contains(.sessionHasGraphicAccess) else {
         throw Failure(4, "requires_gui_login: Run as the logged-in guest desktop user in their GUI session.")
     }
-    let path = URL(fileURLWithPath: "/Applications/Claude.app").resolvingSymlinksInPath()
+    let path = URL(fileURLWithPath: nativeAppPath).resolvingSymlinksInPath()
     let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter {
         $0.bundleURL?.resolvingSymlinksInPath() == path && !$0.isTerminated
     }
     guard !apps.isEmpty else { throw Failure(3, "not_running: Launch /Applications/Claude.app in the guest.") }
     let requirement = try claudeSigningRequirement()
     let validPIDs = apps.compactMap { app -> pid_t? in
+        if nativeChrome {
+            // Never capture the separate editor/diagnostic automation process.
+            let command = Process(); command.executableURL = URL(fileURLWithPath: "/bin/ps")
+            command.arguments = ["-p", String(app.processIdentifier), "-o", "command="]
+            let pipe = Pipe(); command.standardOutput = pipe; command.standardError = FileHandle.nullDevice
+            guard (try? command.run()) != nil else { return nil }
+            let bytes = pipe.fileHandleForReading.readDataToEndOfFile(); command.waitUntilExit()
+            let args = String(data: bytes, encoding: .utf8) ?? ""
+            guard args.contains("--user-data-dir=" + nativeChromeProfile), !args.contains("--remote-debugging") else { return nil }
+        }
         let attributes = [kSecGuestAttributePid: app.processIdentifier] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code,
@@ -82,6 +98,25 @@ func claudeWindow() async throws -> SCWindow {
               let owner = window.owningApplication else { return false }
         return owner.bundleIdentifier == bundleID && pids.contains(owner.processID)
     }
+    if nativeChrome && AXIsProcessTrusted() {
+        for pid in pids {
+            let app = AXUIElementCreateApplication(pid)
+            var focused: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused) == .success,
+                  let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { continue }
+            let element = focused as! AXUIElement
+            var point: CFTypeRef?, size: CFTypeRef?
+            var origin = CGPoint.zero, extent = CGSize.zero
+            guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &point) == .success,
+                  AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+                  let point, let size, CFGetTypeID(point) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID(),
+                  AXValueGetValue(point as! AXValue, .cgPoint, &origin), AXValueGetValue(size as! AXValue, .cgSize, &extent) else { continue }
+            if let current = windows.first(where: { w in
+                w.owningApplication?.processID == pid && abs(w.frame.minX-origin.x)<1 && abs(w.frame.minY-origin.y)<1 &&
+                abs(w.frame.width-extent.width)<1 && abs(w.frame.height-extent.height)<1
+            }) { return current }
+        }
+    }
     guard let window = windows.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) else {
         throw Failure(7, "no_visible_window: Open a Claude window on the guest desktop.")
     }
@@ -95,7 +130,7 @@ func screenshot(_ window: SCWindow, filter selected: SCContentFilter? = nil) asy
     config.height = max(1, Int((filter.contentRect.height * CGFloat(filter.pointPixelScale)).rounded()))
     config.ignoreShadowsSingleWindow = true
     config.showsCursor = false
-    if #available(macOS 14.2, *) { config.includeChildWindows = false }
+    if #available(macOS 14.2, *) { config.includeChildWindows = nativeChrome }
     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     return try pngData(image)
 }
