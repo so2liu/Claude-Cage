@@ -6,6 +6,58 @@
 
 static VZVirtualMachine *machine;
 static CageGuestSetupView *loginView;
+static NSWindow *desktopWindow;
+@interface CageVMApplicationDelegate : NSObject <NSApplicationDelegate>
+@end
+@implementation CageVMApplicationDelegate
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    // Closing the console never terminates the VM or discards guest work.
+    [desktopWindow orderOut:nil];
+    return NSTerminateCancel;
+}
+@end
+static CageVMApplicationDelegate *applicationDelegate;
+
+bool cageDesktopOpen(void) {
+    __block BOOL opened = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        if (!machine) return;
+        [loginView close]; loginView = nil;
+        if (!desktopWindow) {
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+            VZVirtualMachineView *view = [[VZVirtualMachineView alloc] initWithFrame:NSMakeRect(0, 0, 1200, 750)];
+            view.virtualMachine = machine;
+            view.capturesSystemKeys = YES;
+            if (@available(macOS 14.0, *)) view.automaticallyReconfiguresDisplay = YES;
+            desktopWindow = [[NSWindow alloc] initWithContentRect:view.frame
+                styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                backing:NSBackingStoreBuffered defer:NO];
+            desktopWindow.releasedWhenClosed = NO;
+            desktopWindow.title = @"Cage · 虚拟 Mac";
+            desktopWindow.contentMinSize = NSMakeSize(640, 400);
+            desktopWindow.contentView = view;
+            [desktopWindow center];
+        }
+        [desktopWindow makeKeyAndOrderFront:nil];
+        [desktopWindow makeFirstResponder:desktopWindow.contentView];
+        [NSApp activateIgnoringOtherApps:YES];
+        opened = YES;
+    });
+    return opened;
+}
+void cageDesktopClose(void) {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        [desktopWindow close];
+        desktopWindow.contentView = nil;
+        desktopWindow = nil;
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    });
+}
+bool cageDesktopVisible(void) {
+    __block BOOL visible = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{ visible = desktopWindow.isVisible || desktopWindow.isMiniaturized; });
+    return visible;
+}
 // Match the virtual Mac's scanout. The input protocol retains its original
 // 16:10 coordinate system, regardless of host window size or display scaling.
 static const CGFloat scanWidth = 1920, scanHeight = 1200;
@@ -15,7 +67,10 @@ void cageLoginLoop(void *ref) {
         machine = (__bridge VZVirtualMachine *)ref;
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        applicationDelegate = [CageVMApplicationDelegate new];
+        app.delegate = applicationDelegate;
         [app run];
+        [desktopWindow close]; desktopWindow = nil;
         [loginView close]; loginView = nil; machine = nil;
     }
 }

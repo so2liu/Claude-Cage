@@ -562,12 +562,23 @@ func (l *Lima) Start(ctx context.Context, name string, log io.Writer) error {
 			return err
 		}
 	}
+	// A bundled VM host has its own application identity for native windows.
+	// Command-line builds keep using the current executable.
+	hostAgent := ""
+	if runtime.GOOS == "darwin" && *inst.Config.OS == limatype.DARWIN {
+		if executable, exeErr := os.Executable(); exeErr == nil {
+			candidate := filepath.Join(filepath.Dir(executable), "Cage Virtual Machine.app", "Contents", "MacOS", "cage")
+			if info, statErr := os.Stat(candidate); statErr == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+				hostAgent = candidate
+			}
+		}
+	}
 	return withLog(log, func() error {
 		if err := reconcile.Reconcile(ctx, name); err != nil {
 			return err
 		}
 		started := time.Now()
-		return vmStartError(instance.StartWithPaths(ctx, inst, false, false, "", guestAgent), inst.Dir, started)
+		return vmStartError(instance.StartWithPaths(ctx, inst, false, false, hostAgent, guestAgent), inst.Dir, started)
 	})
 }
 

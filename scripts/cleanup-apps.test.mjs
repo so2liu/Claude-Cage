@@ -6,7 +6,6 @@ import {
   symlink,
   access,
   rm,
-  copyFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,7 +41,11 @@ async function app(directory, id = cageID) {
     path.join(directory, "Contents/Info.plist"),
     `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string><key>CFBundleExecutable</key><string>Cage</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>`,
   );
-  await copyFile('/bin/sleep', path.join(directory, 'Contents/MacOS/Cage'));
+  // Copying a signed system executable can be killed by macOS before lsof
+  // observes it. Build a fixture whose signature belongs to this test bundle.
+  execFileSync('/usr/bin/clang', ['-x', 'c', '-', '-o', path.join(directory, 'Contents/MacOS/Cage')], {
+    input: '#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n', stdio: ['pipe', 'ignore', 'pipe'],
+  });
   execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', directory], { stdio: 'ignore' });
   return directory;
 }

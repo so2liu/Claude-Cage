@@ -466,6 +466,7 @@ func (s *Server) handler() http.Handler {
 	if s.macosGuest != nil {
 		mux.HandleFunc("POST /api/macos/first-setup", s.macOSLoginWindow)
 		mux.HandleFunc("POST /api/macos/login", s.macOSLoginWindow)
+		mux.HandleFunc("POST /api/macos/desktop", s.macOSLoginWindow)
 		mux.HandleFunc("POST /api/macos/maintenance", s.macOSLoginWindow)
 		s.registerMacOSClaudeRoutes(mux)
 		s.registerMacOSBrowserRoutes(mux)

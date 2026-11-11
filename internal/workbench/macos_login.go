@@ -83,9 +83,13 @@ func (s *Server) revokeMacLogin(session string) {
 }
 
 func (s *Server) trackMacLogin(epoch context.Context, input guestos.MacLoginRequest, result guestos.MacLoginReply) {
-	if input.Action == "open" && result.Session != "" {
+	if (input.Action == "open" || input.Action == "desktop-open") && result.Session != "" {
 		lifetime := s.lifetimeContext()
-		lease := &macLoginLease{request: guestos.MacLoginRequest{Action: "close", Session: result.Session, Setup: input.Setup, Maintenance: input.Maintenance}}
+		closeAction := "close"
+		if input.Action == "desktop-open" {
+			closeAction = "desktop-close"
+		}
+		lease := &macLoginLease{request: guestos.MacLoginRequest{Action: closeAction, Session: result.Session, Setup: input.Setup, Maintenance: input.Maintenance}}
 		s.mu.Lock()
 		previous := s.macLoginLease
 		s.macLoginLease = lease
@@ -95,7 +99,7 @@ func (s *Server) trackMacLogin(epoch context.Context, input guestos.MacLoginRequ
 		previous.stop()
 		return
 	}
-	if input.Action == "close" || result.Closed {
+	if input.Action == "close" || input.Action == "desktop-close" || result.Closed {
 		s.mu.Lock()
 		lease := s.macLoginLease
 		if lease != nil && lease.request.Session == input.Session {
@@ -148,7 +152,20 @@ func (s *Server) macOSLoginWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Setup = r.URL.Path == "/api/macos/first-setup"
-	if r.URL.Path == "/api/macos/maintenance" {
+	desktop := r.URL.Path == "/api/macos/desktop"
+	if desktop {
+		switch input.Action {
+		case "desktop-open", "desktop-close", "desktop-status":
+		default:
+			http.Error(w, "无效的桌面操作", http.StatusBadRequest)
+			return
+		}
+		if s.macSetupPending() {
+			http.Error(w, "请先完成首次设置", http.StatusConflict)
+			return
+		}
+		input = guestos.MacLoginRequest{Action: input.Action, Session: input.Session}
+	} else if r.URL.Path == "/api/macos/maintenance" {
 		if !guestos.ValidMacMaintenancePurpose(input.Maintenance) {
 			http.Error(w, "请选择需要恢复的客机系统权限", http.StatusBadRequest)
 			return
@@ -257,9 +274,13 @@ func (s *Server) macOSLoginWindow(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "无效的首次设置操作", 400)
 			return
 		}
-	} else if input.Action == "finish" {
-		http.Error(w, "无效的登录操作", 400)
-		return
+	} else if !desktop && input.Maintenance == "" {
+		switch input.Action {
+		case "open", "close", "frame", "click", "key", "scroll":
+		default:
+			http.Error(w, "无效的登录操作", 400)
+			return
+		}
 	}
 	if len(input.Session) > 80 {
 		http.Error(w, "无效的登录会话", 400)
@@ -290,8 +311,11 @@ func (s *Server) macOSLoginWindow(w http.ResponseWriter, r *http.Request) {
 	if input.Maintenance != "" && result.MaintenanceVersion != 1 {
 		result = guestos.MacLoginReply{Closed: true, Recovery: "environment-restart", Error: "虚拟 Mac 运行器需要重新加载。请保存工作，在环境设置中停止并重新启动虚拟 Mac，再打开授权设置。"}
 	}
+	if desktop && result.DesktopVersion != 1 {
+		result = guestos.MacLoginReply{Closed: true, Recovery: "environment-restart", Error: "虚拟 Mac 运行器需要更新。请保存工作，停止并重新启动虚拟 Mac，再打开桌面。"}
+	}
 	s.trackMacLogin(epoch, input, result)
-	if input.Action == "open" && ctx.Err() != nil {
+	if (input.Action == "open" || input.Action == "desktop-open") && ctx.Err() != nil {
 		s.revokeMacLogin(result.Session)
 		return
 	}
@@ -300,7 +324,7 @@ func (s *Server) macOSLoginWindow(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(result); err != nil && input.Action == "open" {
+	if err := json.NewEncoder(w).Encode(result); err != nil && (input.Action == "open" || input.Action == "desktop-open") {
 		s.revokeMacLogin(result.Session)
 	}
 }

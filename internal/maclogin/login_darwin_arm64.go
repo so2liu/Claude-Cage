@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"al.essio.dev/pkg/shellescape"
 	"time"
@@ -58,6 +59,7 @@ type request = guestos.MacLoginRequest
 type reply = guestos.MacLoginReply
 
 type loginSession struct {
+	desktop                  bool
 	profile                  string
 	token                    string
 	expires                  time.Time
@@ -124,9 +126,12 @@ uid=$(/usr/bin/id -u ` + shellescape.Quote(bound.User) + `)
 }
 
 func (s *loginSession) close() {
-	if s.token != "" {
+	if s.desktop {
+		C.cageDesktopClose()
+	} else if s.token != "" {
 		C.cageLoginEnable(false)
 	}
+	s.desktop = false
 	s.token = ""
 	s.screenID = ""
 	s.setup = false
@@ -138,6 +143,15 @@ func (s *loginSession) close() {
 }
 
 func (s *loginSession) handle(in request) reply {
+	if strings.HasPrefix(in.Action, "desktop-") {
+		return s.handleDesktop(in)
+	}
+	if s.desktop {
+		if in.Action != "open" {
+			return reply{Closed: true}
+		}
+		s.close()
+	}
 	if in.Maintenance != "" || (s.maintenance != "" && in.Action != "open") {
 		return s.handleMaintenance(in)
 	}
@@ -219,6 +233,48 @@ func (s *loginSession) handle(in request) reply {
 	return reply{}
 }
 
+// Desktop access is a separate capability from the limited login controls.
+// The controller renews this short lease only while its trusted local UI lives.
+func (s *loginSession) handleDesktop(in request) reply {
+	result := reply{DesktopVersion: 1}
+	if in.Setup || in.Maintenance != "" {
+		result.Error = "无效的桌面操作"
+		return result
+	}
+	if in.Action == "desktop-open" {
+		bound, err := guestos.LoadMacOSProfile(s.profile)
+		if err != nil || bound == nil || bound.SetupID != "" {
+			result.Error = "请先完成虚拟 Mac 首次设置"
+			return result
+		}
+		s.close()
+		if !bool(C.cageDesktopOpen()) {
+			result.Error = "虚拟 Mac 尚未就绪"
+			return result
+		}
+		s.desktop = true
+		s.token = rand.Text()
+		s.expires = time.Now().Add(45 * time.Second)
+		result.Session = s.token
+		return result
+	}
+	if !s.desktop || s.token == "" || subtle.ConstantTimeCompare([]byte(in.Session), []byte(s.token)) != 1 {
+		result.Closed = true
+		return result
+	}
+	if in.Action == "desktop-close" || time.Now().After(s.expires) || !bool(C.cageDesktopVisible()) {
+		s.close()
+		result.Closed = true
+		return result
+	}
+	if in.Action != "desktop-status" {
+		result.Error = "无效的桌面操作"
+		return result
+	}
+	s.expires = time.Now().Add(45 * time.Second)
+	return result
+}
+
 func run(ctx context.Context, machine *apple.VirtualMachine, dir string) error {
 	if !driver.OwnsOffscreenView(dir) {
 		return errors.New("invalid local macOS login view")
@@ -254,7 +310,7 @@ func run(ctx context.Context, machine *apple.VirtualMachine, dir string) error {
 			conn, err := ln.Accept()
 			if err != nil {
 				if n, ok := err.(net.Error); ok && n.Timeout() && runCtx.Err() == nil {
-					if s.token != "" && (time.Now().After(s.expires) || s.currentScreen() != s.screenID) {
+					if s.token != "" && (time.Now().After(s.expires) || (!s.desktop && s.currentScreen() != s.screenID) || (s.desktop && !bool(C.cageDesktopVisible()))) {
 						s.close()
 					}
 					continue

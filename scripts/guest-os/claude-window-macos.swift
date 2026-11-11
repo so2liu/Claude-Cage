@@ -51,6 +51,15 @@ func claudeSigningRequirement() throws -> SecRequirement {
     return requirement
 }
 
+// Cache verification for a live process identity, never for a reusable PID alone.
+// A replacement or relaunch must pass the profile and signature checks again.
+private final class NativeProcessIdentities: @unchecked Sendable {
+    static let shared = NativeProcessIdentities()
+    let lock = NSLock()
+    struct Identity { let launched: Date; let accepted: Bool }
+    var identities: [pid_t: Identity] = [:]
+}
+
 func claudePIDs() throws -> Set<pid_t> {
     var console = stat()
     var attributes: SessionAttributeBits = []
@@ -65,7 +74,21 @@ func claudePIDs() throws -> Set<pid_t> {
     }
     guard !apps.isEmpty else { throw Failure(3, "not_running: Launch /Applications/Claude.app in the guest.") }
     let requirement = try claudeSigningRequirement()
+    let cache = NativeProcessIdentities.shared
+    cache.lock.lock()
+    defer { cache.lock.unlock() }
+    cache.identities = cache.identities.filter { pid, identity in
+        apps.contains { $0.processIdentifier == pid && $0.launchDate == identity.launched }
+    }
     let validPIDs = apps.compactMap { app -> pid_t? in
+        guard let launched = app.launchDate else { return nil }
+        if let identity = cache.identities[app.processIdentifier], identity.launched == launched {
+            return identity.accepted ? app.processIdentifier : nil
+        }
+        func remember(_ accepted: Bool) -> pid_t? {
+            cache.identities[app.processIdentifier] = .init(launched: launched, accepted: accepted)
+            return accepted ? app.processIdentifier : nil
+        }
         if nativeChrome {
             // Never capture the separate editor/diagnostic automation process.
             let command = Process(); command.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -74,13 +97,13 @@ func claudePIDs() throws -> Set<pid_t> {
             guard (try? command.run()) != nil else { return nil }
             let bytes = pipe.fileHandleForReading.readDataToEndOfFile(); command.waitUntilExit()
             let args = String(data: bytes, encoding: .utf8) ?? ""
-            guard args.contains("--user-data-dir=" + nativeChromeProfile), !args.contains("--remote-debugging") else { return nil }
+            guard args.contains("--user-data-dir=" + nativeChromeProfile), !args.contains("--remote-debugging") else { return remember(false) }
         }
         let attributes = [kSecGuestAttributePid: app.processIdentifier] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code,
-              SecCodeCheckValidity(code, [], requirement) == errSecSuccess else { return nil }
-        return app.processIdentifier
+              SecCodeCheckValidity(code, [], requirement) == errSecSuccess else { return remember(false) }
+        return remember(true)
     }
     guard !validPIDs.isEmpty else { throw Failure(5, "identity_error: The running app failed Anthropic signature verification.") }
     return Set(validPIDs)

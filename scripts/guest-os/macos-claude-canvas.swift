@@ -150,17 +150,23 @@ final class ClaudeCanvasSession {
               let content = image.cropping(to: CGRect(x:0,y:top,width:image.width,height:image.height-top)),
               try liveBounds(layout.id, layout.pid) == layout.frame,
               try claudePIDs().contains(layout.pid) else { throw Failure(7, "window_changed") }
-        var data = phoneJPEG ? try phoneDesktopJPEG(content) : try pngData(content)
-        var mime = phoneJPEG ? "image/jpeg" : "image/png"
-        if data.count >= 8<<20 {
-            // Preserve native glyph density and geometry even on photo-heavy windows.
-            mime = "image/jpeg"
-            for quality in [0.93, 0.84] {
-                data = try encodedImage(content, type:.jpeg, properties:[kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-                if data.count < 8<<20 { break }
+        // Encoding a full frame must not block the GUI actor that delivers input.
+        let (data, mime) = try await Task.detached(priority: .userInitiated) {
+            var data = phoneJPEG ? try phoneDesktopJPEG(content) : try pngData(content)
+            var mime = phoneJPEG ? "image/jpeg" : "image/png"
+            if data.count >= 8<<20 {
+                mime = "image/jpeg"
+                for quality in [0.93, 0.84] {
+                    data = try encodedImage(content, type:.jpeg, properties:[kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+                    if data.count < 8<<20 { break }
+                }
             }
-        }
-        guard data.count < 8<<20 else { throw Failure(8, "frame_limit") }
+            guard data.count < 8<<20 else { throw Failure(8, "frame_limit") }
+            return (data, mime)
+        }.value
+        // The actor may have handled another window while the encoder ran.
+        guard token == geometry, try liveBounds(layout.id, layout.pid) == layout.frame,
+              try claudePIDs().contains(layout.pid) else { throw Failure(7, "window_changed") }
         var reply: [String:Any] = ["window":layout.id,"pid":layout.pid,"mime":mime,"sequence":sequence,
                 "contentWidth":layout.content.width,"contentHeight":layout.content.height,
                 "pixelWidth":content.width,"pixelHeight":content.height,"cropTop":layout.cropTop,

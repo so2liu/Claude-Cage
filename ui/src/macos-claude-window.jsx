@@ -123,7 +123,8 @@ export function MacOSClaudeWindow({ chrome = false, visible, keyboard = "mac", r
       let delay = 2200;
       try {
         if (!current || Date.now() >= nextStatus) {
-          current = await request("status");
+          // Diagnostics must not queue ahead of pointer and keyboard events.
+          current = await windowRequest("status", {}, null, app);
           checkFrame = true;
           nextStatus = Date.now() + 2200;
           if (live() && current.persistent && !connection.current) {

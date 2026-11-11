@@ -31,6 +31,7 @@ import { useCLISessions, sessionsChanged } from "./cli-sessions";
 import { TerminalMenu } from "./terminal-menu";
 import { InitializationGate } from "./initialization";
 import { MacOSLogin } from "./macos-login";
+import { MacNativeDesktop, useMacNativeDesktop } from "./macos-native-desktop";
 import { MacOSClaudeWindow } from "./macos-claude-window";
 import { ProjectRecovery } from "./project-recovery";
 import { ClaudeDesktop } from "./claude-desktop";
@@ -64,6 +65,8 @@ import { stopAndExit } from "./quit";
 function App() {
   const { account } = useAccount();
   const macGuest = account?.guest_system === "macos";
+  const localMacDesktop = macGuest && nativeAvailable() && !isRemoteClient();
+  const openNativeDesktop = useMacNativeDesktop();
   const nativeGuestLabel = {macos: "macOS", "windows-11": "Windows"}[account?.guest_system];
   const [, refreshClientPreferences] = useState(0);
   useEffect(() => {
@@ -380,6 +383,9 @@ function App() {
     if (macGuest) {
       const opened = await action("/macos/chrome/window", { action: "open-url", url });
       if (!opened) return;
+      if (localMacDesktop) {
+        try { await openNativeDesktop(); return opened; } catch (error) { notify(error.message); return null; }
+      }
       const result = tabs.find(tab => tab.kind === "web") || await action("/browser/new", { url: "about:blank", incognito: false });
       if (result) { setDesktopOpen(false); setHome(false); setTabs(list => list.some(tab => tab.id === result.id) ? list : [...list, { ...result, kind: "web", url: "about:blank" }]); setActive(result.id); }
       return result;
@@ -426,6 +432,10 @@ function App() {
   };
   const openSettingsPageResult = result => result.id ? showBrowserResult(result) : openBrowserPage(result.url, false);
   const openBrowser = () => {
+    if (localMacDesktop) {
+      void (async () => { const result = await action("/macos/chrome/window", { action: "launch" }); if (result) await openNativeDesktop(); })().catch(error => notify(error.message));
+      return;
+    }
     const tab =
       tabs.find(
         (t) => t.id === lastBrowserTab.current && t.kind !== "terminal",
@@ -1433,7 +1443,8 @@ function App() {
           <main className={`workspace ${split ? "workspace-split" : ""}`} ref={workspaceBox}
             style={{ "--split-left": `${100 * (dualBrowser && nativeSplit?.fraction || 0.5)}%` }}>
             {dropSide && <div aria-hidden="true" className={`split-drop split-${dropSide}`}>{dropSide === "left" ? "放到左侧" : "放到右侧"}</div>}
-            {!storageRecovery && desktopOpen && macGuest && <MacOSClaudeWindow uploads={desktopFiles.uploads} keyboard={status.keyboard} remoteRef={remote}
+            {!storageRecovery && desktopOpen && localMacDesktop && <MacNativeDesktop onOpen={async () => { const result = await action("/macos/claude/window", { action: "launch" }); if (result) return openNativeDesktop(); }} onStatus={notify} />}
+            {!storageRecovery && desktopOpen && macGuest && !localMacDesktop && <MacOSClaudeWindow uploads={desktopFiles.uploads} keyboard={status.keyboard} remoteRef={remote}
               onStatus={notify} onFallback={(text, message) => setTransfer({ text, message })} visible={!settingsOpen} onConfirm={confirm}
               sidebarCollapsed={sidebarCollapsed} onExpand={() => persist("cage-sidebar-collapsed", false, setSidebarCollapsed)} />}
             {!storageRecovery && desktopOpen && !macGuest && <ClaudeDesktop
@@ -1455,7 +1466,7 @@ function App() {
               <>
                 {!desktopOpen && !showHome && webPanes.length > 0 && (
                   <section className={`pane-lane browser-lane ${browserTabLayout === "vertical" ? "vertical-browser" : ""} ${dualBrowser ? "" : "split-" + paneSide(webPanes[0].id)}`}>
-                    {macGuest && liveBrowser?.kind === "web" ? <MacOSClaudeWindow chrome visible={!settingsOpen} keyboard={status.keyboard} remoteRef={remote}
+                    {localMacDesktop && liveBrowser?.kind === "web" ? <MacNativeDesktop onOpen={openNativeDesktop} onStatus={notify} /> : macGuest && liveBrowser?.kind === "web" ? <MacOSClaudeWindow chrome visible={!settingsOpen} keyboard={status.keyboard} remoteRef={remote}
                       onStatus={notify} onFallback={(text, message) => setTransfer({ text, message })} onConfirm={confirm}
                       sidebarCollapsed={sidebarCollapsed} onExpand={() => persist("cage-sidebar-collapsed", false, setSidebarCollapsed)} /> : <>
                     {browserTabLayout === "vertical" && <BrowserTabRail tabs={browserTabs} metadata={metadata}

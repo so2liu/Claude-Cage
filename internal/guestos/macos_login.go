@@ -18,6 +18,7 @@ type MacLoginRequest struct {
 	Password    string `json:"password,omitempty"`
 }
 type MacLoginReply struct {
+	DesktopVersion     int    `json:"desktop_version,omitempty"`
 	MIME               string `json:"mime,omitempty"`
 	Session            string `json:"session,omitempty"`
 	Image              []byte `json:"image,omitempty"`

@@ -101,6 +101,24 @@ PLIST
 sign=(codesign --force --sign "$identity")
 if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
 "${sign[@]}" --entitlements third_party/lima/vz.entitlements "$bundle/Contents/Resources/cage"
+if [[ "$(uname -m)" == arm64 ]]; then
+  vm_bundle="$bundle/Contents/Resources/Cage Virtual Machine.app"
+  mkdir -p "$vm_bundle/Contents/MacOS"
+  cp "$bundle/Contents/Resources/cage" "$vm_bundle/Contents/MacOS/cage"
+  cat > "$vm_bundle/Contents/Info.plist" <<'VMPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>io.github.lee-xeo.claude-cage.virtual-machine</string>
+<key>CFBundleName</key><string>Cage Virtual Machine</string>
+<key>CFBundleExecutable</key><string>cage</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+VMPLIST
+  "${sign[@]}" --entitlements third_party/lima/vz.entitlements "$vm_bundle"
+fi
 account_signing=("${sign[@]}")
 if [[ -n "${CAGE_PROVISIONING_PROFILE:-}" ]]; then
   [[ "$identity" != - ]] || { echo 'Biometric provisioning requires a Developer ID signature.' >&2; exit 1; }

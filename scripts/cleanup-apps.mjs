@@ -24,7 +24,7 @@ function isCage(bundle) {
   }
 }
 function inUse(bundle) {
-  const files = ["Contents/MacOS/Cage", "Contents/Resources/cage"].map((file) => path.join(bundle, file));
+  const files = ["Contents/MacOS/Cage", "Contents/Resources/cage", "Contents/Resources/Cage Virtual Machine.app/Contents/MacOS/cage"].map((file) => path.join(bundle, file));
   try {
     return execFileSync("/usr/sbin/lsof", ["-t", ...files], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "";
   } catch (error) {
