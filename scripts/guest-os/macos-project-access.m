@@ -200,8 +200,15 @@ static NSString *mountID(NSString *project) {
                                   error:nil])
         return;
     struct stat st;
-    if (lstat(dir.fileSystemRepresentation, &st) || !S_ISDIR(st.st_mode) || st.st_uid != getuid() ||
-        (st.st_mode & 0077))
+    // Other Cage components may have created this shared parent with mode 0755.
+    // Tighten only a real directory owned by this user before binding the socket.
+    int directory = open(dir.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (directory < 0)
+        return;
+    BOOL privateDirectory = !fstat(directory, &st) && S_ISDIR(st.st_mode) && st.st_uid == getuid() &&
+                            (!(st.st_mode & 0077) || !fchmod(directory, 0700));
+    close(directory);
+    if (!privateDirectory)
         return;
     // The advisory lock distinguishes a dead listener from another running copy.
     NSString *l = [dir stringByAppendingPathComponent:@"project-terminal.lock"];
