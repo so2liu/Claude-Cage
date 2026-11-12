@@ -55,6 +55,7 @@ export async function publicManifestRelease(tag, fetchImpl = fetch) {
   const allowed = name => [
     `Cage-${version}-macos-arm64.dmg`, `Cage-${version}-windows-amd64-setup.exe`,
     `Cage-${version}-windows-amd64-setup-unsigned.exe`, `Cage-${version}-linux-amd64.deb`,
+    `Cage-${version}-android-arm64.apk`,
   ].includes(name) || sourceArchive(name);
   if ([...names.keys()].some(name => !allowed(name))) throw new Error('Unexpected public release asset');
   const assets = [{ name: 'SHA256SUMS', state: 'uploaded', size: Buffer.byteLength(text), browser_download_url: `${base}SHA256SUMS` }];
@@ -90,8 +91,9 @@ export function releaseAssets(release) {
   if (assets[1].size > 64 * 1024) throw new Error('Checksum file is too large');
   const windows = optionalAsset(release, `Cage-${version}-windows-amd64-setup.exe`);
   const linux = optionalAsset(release, `Cage-${version}-linux-amd64.deb`);
+  const android = optionalAsset(release, `Cage-${version}-android-arm64.apk`);
   const guestSource = optionalAsset(release, `cage-macos-guest-${version}-source.tar.gz`);
-  return { version, archive: assets[0], checksums: assets[1], source, windows, linux, guestSource };
+  return { version, archive: assets[0], checksums: assets[1], source, windows, linux, android, guestSource };
 }
 
 function optionalAsset(release, name) {
@@ -113,11 +115,11 @@ export function checksumFor(text, asset) {
 }
 
 export function releaseMetadata(release, text) {
-  const { version, archive, source, windows, linux } = releaseAssets(release);
+  const { version, archive, source, windows, linux, android } = releaseAssets(release);
   checksumFor(text, archive);
   checksumFor(text, source);
   const metadata = { version, releaseURL: `${repoURL}/releases/tag/v${version}`, downloadURL: archive.browser_download_url };
-  for (const [key, asset] of [['windowsDownloadURL', windows], ['linuxDownloadURL', linux]]) {
+  for (const [key, asset] of [['windowsDownloadURL', windows], ['linuxDownloadURL', linux], ['androidDownloadURL', android]]) {
     if (!asset) continue;
     try {
       checksumFor(text, asset);
@@ -201,7 +203,7 @@ async function main() {
     await download(source, sourceDigest, values['archive-directory']);
     if (guestSource) await download(guestSource, checksumFor(text, guestSource), values['archive-directory']);
     await writeFile(join(values['archive-directory'], 'SHA256SUMS'), text);
-    for (const url of [metadata.windowsDownloadURL || metadata.windowsPreview?.downloadURL, metadata.linuxDownloadURL].filter(Boolean)) {
+    for (const url of [metadata.windowsDownloadURL || metadata.windowsPreview?.downloadURL, metadata.linuxDownloadURL, metadata.androidDownloadURL].filter(Boolean)) {
       const asset = release.assets.find(asset => asset.browser_download_url === url);
       await download(asset, checksumFor(text, asset), values['archive-directory']);
     }

@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path"
 	"path/filepath"
@@ -179,6 +181,8 @@ func (g *macWorkspaceGuest) execute(channel ssh.Channel, command string) uint32 
 		ticks := g.resourceTicks.Add(10)
 		json.NewEncoder(channel).Encode(macOSResourceSample{Version: 1, Total: 4 << 30, Available: 2 << 30,
 			Free: 1 << 30, Inactive: 1 << 30, CPUs: 2, Boot: 10, CPUTicks: [4]uint32{ticks, 10, 80 + ticks, 0}})
+		return 0
+	case command == "/usr/bin/open -a /Applications/CageProjectAccess.app":
 		return 0
 	case strings.HasPrefix(command, "set -e;"):
 		return 0
@@ -440,5 +444,59 @@ func TestMacOSDefaultWorkspaceNewAndLegacyConversations(t *testing.T) {
 		if s.macOSLegacyWorkspace(record) != "" {
 			t.Fatal("legacy compatibility accepted an unrelated or unbound directory")
 		}
+	}
+}
+
+func TestMacOSProjectOpenRestoresPendingApprovalWindow(t *testing.T) {
+	var activations atomic.Int32
+	var activationFails atomic.Bool
+	guest := newMacWorkspaceGuest(t, func(channel ssh.Channel, command string) (uint32, bool) {
+		if strings.Contains(command, "/usr/bin/open -a /Applications/CageProjectAccess.app") {
+			activations.Add(1)
+			if activationFails.Load() {
+				return 1, true
+			}
+			return 0, true
+		}
+		return 0, false
+	})
+	s := guest.s
+	s.restoreProjectShares()
+	share := s.projectShares[guest.hostPath]
+	if share == nil || share.approval == "" {
+		t.Fatal("expected a pending project authorization")
+	}
+	grant := share.approval
+	if err := s.ensureProjectShare(guest.hostPath); !errors.Is(err, errMacOSProjectApproval) {
+		t.Fatalf("background project probe: %v", err)
+	}
+	if activations.Load() != 0 {
+		t.Fatal("background project recovery stole guest focus")
+	}
+	body, _ := json.Marshal(map[string]any{"workspace": guest.hostPath, "add": false})
+	open := func() *httptest.ResponseRecorder {
+		return windowsBrowserRequestForTest(s, http.MethodPost, "/api/projects/open", body)
+	}
+	response := open()
+	var pending struct{ Workspace, Approval string }
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &pending) != nil || pending.Approval != grant || pending.Workspace != guest.hostPath {
+		t.Fatalf("pending project open: %d %s", response.Code, response.Body.String())
+	}
+	if activations.Load() != 1 || share.detach != nil {
+		t.Fatal("explicit project open did not show the pending window without approving it")
+	}
+	activationFails.Store(true)
+	response = open()
+	if response.Code == http.StatusOK || share.approval != grant || s.projectShares[guest.hostPath] != share || share.detach != nil {
+		t.Fatal("failed window activation lost its pending grant or reported success")
+	}
+	activationFails.Store(false)
+	guest.approved.Store(true)
+	response = open()
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "approval") || share.detach == nil {
+		t.Fatalf("approved project open: %d %s", response.Code, response.Body.String())
+	}
+	if activations.Load() != 2 {
+		t.Fatal("opening an approved project stole guest focus")
 	}
 }

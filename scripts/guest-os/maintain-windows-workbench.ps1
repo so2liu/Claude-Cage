@@ -152,6 +152,7 @@ try {
         . (Join-Path $kit 'windows-workbench-packages.ps1')
         $cache=Join-Path $work 'packages'
         $null=New-Item -ItemType Directory -Path $cache -Force
+        Resolve-ClaudePackages $packages $cli $cache
         $downloads=@{}
         foreach ($spec in @($packages.PSObject.Properties)+@($cli.PSObject.Properties)) { $downloads[$spec.Name]=Get-PinnedPackage $spec.Value $cache }
         Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -166,7 +167,7 @@ try {
         [IO.File]::WriteAllText((Join-Path $bridge 'editor-runtime.json'),'{"commit":"261c84cb1eddf11235f9e2c921425e9663fbe556"}')
         $toolStage=Join-Path $stage 'tools'
         $null=New-Item -ItemType Directory -Path $toolStage
-        foreach ($name in @('desktop','winfsp','sshfs','uv','python','claude','git')) { Copy-Item -LiteralPath $downloads[$name] -Destination $toolStage }
+        foreach ($name in @('desktop','winfsp','sshfs','uv','python','claude','git','gh')) { Copy-Item -LiteralPath $downloads[$name] -Destination $toolStage }
         & (Join-Path $env:SystemRoot 'System32/tar.exe') -a -cf (Join-Path $toolStage 'extras.zip') -C $bridge .
         if ($LASTEXITCODE) { throw '无法准备经过校验的环境工具包。' }
     }

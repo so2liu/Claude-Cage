@@ -52,3 +52,20 @@
 @keyframes initialization-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (max-width: 600px) { .initialization-brand { padding: 18px 20px; } .initialization-content { width: calc(100% - 40px); margin-top: 20px; } .initialization-steps { gap: 12px; flex-wrap: wrap; font-size: 13px; margin-bottom: 26px; } .initialization h1 { font-size: 25px; } .initialization .guest-system-picker { grid-template-columns: 1fr; } .initialization .storage-actions { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { .initialization-content, .initialization-stage { animation: none; } .initialization button { transition: none; } }
+.mac-setup-eyebrow { margin-bottom: 8px !important; font-size: 13px !important; }
+.mac-setup-checklist { display: grid; gap: 0; list-style: none; padding: 0; margin: 24px 0; border-block: 1px solid var(--line); }
+.mac-setup-checklist li { display: flex; align-items: center; gap: 12px; padding: 14px 8px; color: var(--muted); transition: background 180ms, color 180ms; }
+.mac-setup-checklist li + li { border-top: 1px solid var(--line); }
+.mac-setup-checklist li[aria-current] { color: var(--strong); background: var(--chrome); }
+.mac-setup-marker { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 50%; font-size: 13px; flex: none; }
+.mac-setup-checklist li[data-complete="true"] .mac-setup-marker { color: var(--success); }
+.mac-setup-checklist small { margin-left: auto; font-size: 13px; }
+.mac-setup-task h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; }
+.mac-setup-task > button { margin-top: 14px; }
+.mac-setup-help { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
+.mac-setup-help summary { cursor: pointer; }
+.mac-setup-help p, .mac-setup-retention { font-size: 14px; color: var(--muted); }
+.initialization-checks { padding-left: 22px; font-size: 14px; }
+.initialization-checks li { margin: 10px 0; }
+.initialization-checks p { margin: 4px 0; }
+@media (prefers-reduced-motion: reduce) { .mac-setup-checklist li { transition: none; } }

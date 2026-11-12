@@ -1,7 +1,9 @@
 package workbench
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,53 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// A short native popup capture can hold the serialized RFB reader. Mouse
+// bursts during it must arrive in order once capture finishes, not disconnect.
+func TestVNCInputBurstSurvivesBriefGuestCapture(t *testing.T) {
+	s := testServer(t)
+	remote, peer := net.Pipe()
+	finished := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(finished)
+		s.streamVNC(w, r, remote, remote, func() { _ = remote.Close() })
+	}))
+	s.origin = server.URL
+	defer func() { remote.Close(); peer.Close(); server.Close() }()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Origin": {server.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	want := make([]byte, 0, 120)
+	for i := byte(0); i < 20; i++ {
+		packet := []byte{5, 0, 0, i, 0, i}
+		want = append(want, packet...)
+		if err := ws.WriteMessage(websocket.BinaryMessage, packet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The previous four-message / one-second queue failed this condition.
+	select {
+	case <-finished:
+		t.Fatal("display disconnected during a brief capture")
+	case <-time.After(1300 * time.Millisecond):
+	}
+	peer.SetReadDeadline(time.Now().Add(3 * time.Second))
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(peer, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("input was dropped or reordered")
+	}
+	ws.Close()
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("disconnect did not cancel transport")
+	}
+}
 
 type observedVNCTransport struct {
 	net.Conn

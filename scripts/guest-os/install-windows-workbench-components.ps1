@@ -8,7 +8,7 @@ if ([guid](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Para
     $Bridge -ne (Join-Path $env:ProgramFiles ("Cage Guest Bridge\"+$VMId)) -or $Stage -ne (Join-Path $Bridge 'setup-packages')) {
     throw 'Incorrect guest installation target.'
 }
-foreach ($file in @($Packages.desktop,$Packages.winfsp,$Packages.sshfs,$CLI.uv,$CLI.python,$CLI.claude,$CLI.git)) {
+foreach ($file in @($Packages.desktop,$Packages.winfsp,$Packages.sshfs,$CLI.uv,$CLI.python,$CLI.claude,$CLI.git,$CLI.gh)) {
     if ((Get-FileHash -LiteralPath (Join-Path $Stage $file.filename)).Hash -ne $file.sha256) { throw ('Guest package digest mismatch: '+$file.filename) }
 }
 $extras=Join-Path $Stage 'extras.zip'
@@ -20,6 +20,36 @@ if ($bridgeTask.Description -cne "Cage protected GUI bridge $VMId $GUIUserSID" -
 
 # All paths below are inside the administrator-owned bridge. Extraction and
 # package operations never take a filename supplied by an ordinary guest user.
+function Assert-LocalClaudeTool([string]$Path) {
+    if (![IO.Path]::IsPathRooted($Path) -or $Path.StartsWith('\\') -or
+        [IO.DriveInfo]::new([IO.Path]::GetPathRoot($Path)).DriveType -eq 'Network') { throw 'Claude Code must use a local tool file.' }
+    $item=Get-Item -LiteralPath $Path -Force
+    if ($item -isnot [IO.FileInfo]) { throw 'Claude Code must use a local tool file.' }
+    while ($item) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'A Claude Code tool path is a reparse point.' }
+        if ($item -is [IO.FileInfo]) { $item=$item.Directory } else { $item=$item.Parent }
+    }
+}
+
+function Assert-ClaudeCodeReceipt($Value, $Selected, [string]$PreviousReceipt) {
+    if ($Value.version -ne 1 -or $Value.claude_version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid Claude Code version or hash.' }
+    if ($Value.claude_sha256 -eq $Selected.sha256) {
+        if ($Value.claude_version -cne $Selected.version) { throw 'The Claude Code receipt differs from the selected release.' }
+    } else {
+        $previous=Get-Content -LiteralPath $PreviousReceipt -Raw | ConvertFrom-Json
+        # A retained version must already be bound by the administrator's
+        # receipt. Legacy receipts without a version cannot certify a newer
+        # release from a user's claim; fail while leaving that receipt intact.
+        if (!$previous.PSObject.Properties['claude_version'] -or $previous.claude_version -cne $Value.claude_version -or
+            $previous.claude -cne $Value.claude -or $previous.claude_sha256 -cne $Value.claude_sha256 -or
+            [version]$Value.claude_version -le [version]$Selected.version) { throw 'The retained Claude Code does not match its protected version receipt.' }
+    }
+    Assert-LocalClaudeTool $Value.claude
+    if ((Get-FileHash -LiteralPath $Value.claude -Algorithm SHA256).Hash -ne $Value.claude_sha256) { throw 'The selected Claude Code changed after installation.' }
+    $signature=Get-AuthenticodeSignature -LiteralPath $Value.claude
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Anthropic,? PBC') { throw 'The selected Claude Code signature is invalid.' }
+}
+
 function Install-GuestComponents {
     # Windows PowerShell 5.1 ZIP APIs and Copy-Item truncate long editor
     # paths on a fresh Windows install. The OS-supplied archive tool supports
@@ -37,13 +67,9 @@ function Install-GuestComponents {
     }
 
     $msix=Join-Path $Stage $Packages.desktop.filename
-    $signature=Get-AuthenticodeSignature -LiteralPath $msix
-    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Anthropic,? PBC') { throw 'The official Claude Desktop package signature is invalid.' }
-    $provisioned=@(Get-AppxProvisionedPackage -Online | Where-Object DisplayName -ceq 'Claude')
-    if ($provisioned.Count -gt 1 -or ($provisioned.Count -eq 1 -and $provisioned[0].PackageName -notmatch '^Claude_[0-9.]+_x64__pzs8sxrjxfjjc$')) { throw 'An unexpected existing Claude registration was preserved.' }
-    if (!$provisioned.Count) {
-        $null=Add-AppxProvisionedPackage -Online -PackagePath $msix -SkipLicense -Regions 'all'
-    }
+    . (Join-Path $Bridge 'claude-desktop-windows.ps1')
+    Assert-ClaudeDesktopRelease $msix $Packages.desktop.version
+    Install-ProvisionedClaude $msix $GUIUserSID
     $name='Cage-Workbench-Boot-'+$VMId.ToString('D')
     $image='"'+(Join-Path $Bridge 'cage-guest-boot.exe')+'" '+$VMId.ToString('D')
     $service=Get-CimInstance Win32_Service -Filter "Name='$name'"
@@ -54,6 +80,11 @@ function Install-GuestComponents {
 }
 if ($Phase -eq 'Prepare') { Install-GuestComponents; return }
 
+. (Join-Path $Bridge 'claude-desktop-windows.ps1')
+# This directory is administrator-owned. Only the separately ACL-limited
+# receipt can be written by the paired ordinary user.
+[IO.File]::WriteAllText((Join-Path $Stage 'resolved-cli-dependencies.json'),$CLIJSON,[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $Stage 'resolved-workbench-packages.json'),$PackagesJSON,[Text.UTF8Encoding]::new($false))
 $receipt=Join-Path $Stage 'cli-receipt.in'
 if (!(Test-Path -LiteralPath $receipt)) { $f=[IO.File]::Open($receipt,'CreateNew','Write','None'); $f.Dispose() }
 $admin=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
@@ -97,9 +128,10 @@ try {
         $reader=[IO.StreamReader]::new($handle)
         $value=$reader.ReadToEnd() | ConvertFrom-Json
     } finally { $handle.Dispose() }
-    if ($value.version -ne 1 -or $value.claude_sha256 -ne $CLI.claude.sha256) { throw 'Invalid Claude Code version or hash.' }
+    Assert-ClaudeCodeReceipt $value $CLI.claude (Join-Path $Bridge 'cli-tools.json')
     $result=[ordered]@{version=1}
-    foreach ($name in @('python','claude','git_bash')) {
+    $result.claude_version=$value.claude_version
+    foreach ($name in @('python','claude','git_bash','gh')) {
         $hash=$name+'_sha256'
         if (![IO.Path]::IsPathRooted($value.$name) -or $value.$hash -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid Claude tool record.' }
         $result[$name]=$value.$name
@@ -121,7 +153,7 @@ Start-ScheduledTask -TaskName $taskName
 
 # Packages have been verified and installed. The instance-scoped host cache
 # permits repairs; the guest does not need a second copy of the installers.
-foreach ($package in @($Packages.desktop,$Packages.winfsp,$Packages.sshfs,$CLI.uv,$CLI.python,$CLI.claude,$CLI.git)) {
+foreach ($package in @($Packages.desktop,$Packages.winfsp,$Packages.sshfs,$CLI.uv,$CLI.python,$CLI.claude,$CLI.git,$CLI.gh)) {
     [IO.File]::Delete((Join-Path $Stage $package.filename))
 }
 [IO.File]::Delete($extras)

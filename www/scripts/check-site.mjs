@@ -38,15 +38,20 @@ for (const code of codes) {
   assert.ok(!downloadSection?.includes('CLAUDE CAGE · ALPHA'), `${code}: stale release channel label`);
   assert.equal([...html.matchAll(/<a\b[^>]*\bdata-download-open(?:\s|>)/g)].length, 3, `${code}: all download entries must open the platform chooser`);
   assert.ok(html.includes('aria-labelledby="platform-title"'), `${code}: platform dialog has no accessible title`);
-  for (const platform of ['macOS', 'Windows', 'Linux']) {
+  for (const platform of ['macOS', 'Windows', 'Linux', 'Android', 'iOS']) {
     assert.ok(html.includes(`data-platform="${platform}"`), `${code}: missing ${platform} choice`);
   }
   const windowsLinks = [...html.matchAll(/href="([^"]*windows-amd64-setup\.exe)"/g)].map(match => match[1]);
   assert.deepEqual(windowsLinks, published.windowsDownloadURL ? [published.windowsDownloadURL, published.windowsDownloadURL] : [], `${code}: Windows download must match the verified optional release metadata`);
-  for (const [suffix, url] of [['linux-amd64.deb', published.linuxDownloadURL], ['windows-amd64-setup-unsigned.exe', published.windowsDownloadURL ? undefined : published.windowsPreview?.downloadURL]]) {
+  for (const [suffix, url] of [['linux-amd64.deb', published.linuxDownloadURL], ['android-arm64.apk', published.androidDownloadURL], ['windows-amd64-setup-unsigned.exe', published.windowsDownloadURL ? undefined : published.windowsPreview?.downloadURL]]) {
     const links = [...html.matchAll(/href="([^"]+)"/g)].map(match => match[1]).filter(link => link.endsWith(suffix));
     assert.deepEqual(links, url ? [url, url] : [], `${code}: ${suffix} must match verified metadata`);
   }
+  const ios = html.match(/<article\b[^>]*data-platform="iOS"[^>]*>([\s\S]*?)<\/article>/)?.[1];
+  assert.ok(ios?.includes('href="/Claude-Cage/docs/mobile/"'), `${code}: iOS needs its local build guide`);
+  assert.ok(ios?.includes('/Claude-Cage/platforms/apple.svg'), `${code}: iOS platform icon is missing`);
+  const android = html.match(/<article\b[^>]*data-platform="Android"[^>]*>([\s\S]*?)<\/article>/)?.[1];
+  assert.ok(android?.includes('/Claude-Cage/platforms/android.svg'), `${code}: Android platform icon is missing`);
 }
 assert.ok(!fs.existsSync(path.join(dist,'en/index.html')), 'Old English page still present');
 console.log(`Verified ${codes.length} README languages, dropdowns, directions and local assets.`);

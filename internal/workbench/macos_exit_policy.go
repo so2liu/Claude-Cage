@@ -93,7 +93,7 @@ func (s *Server) saveMacOSStaticExit(ctx context.Context, sample macOSExitCandid
 	if closed.Mode != cage.GateClosed || closed.RunID != sample.Run || closed.Configuration != sample.Fingerprint {
 		return errors.New("无法确认当前客机已关闭外网")
 	}
-	if err := writePrivate(s.configPath, cfg); err != nil {
+	if err := s.saveExitPolicyConfig(cfg); err != nil {
 		return err
 	}
 	s.mu.Lock()

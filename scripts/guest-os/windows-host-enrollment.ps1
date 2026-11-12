@@ -19,6 +19,7 @@ public static class Native {
  [DllImport("kernel32.dll",SetLastError=true)] public static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe,out uint pid);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out FileTime created,out FileTime exited,out FileTime kernel,out FileTime user);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder image,ref uint size);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)] static extern uint GetLongPathNameW(string path,StringBuilder expanded,uint capacity);
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
  [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr data,uint bytes,out uint needed);
  [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr process,int kind,out Basic basic,uint bytes,out uint needed);
@@ -29,6 +30,17 @@ public static class Native {
  public static string Image(uint pid) {
   var p=OpenProcess(0x1000,false,pid);if(p==IntPtr.Zero)throw new InvalidOperationException("enrollment_peer_invalid");
   try {var value=new StringBuilder(32768);uint n=(uint)value.Capacity;if(!QueryFullProcessImageNameW(p,0,value,ref n))throw new InvalidOperationException("enrollment_peer_invalid");return value.ToString();}finally{CloseHandle(p);}
+ }
+ static string LongPath(string path) {
+  var expanded=new StringBuilder(32768);
+  uint n=GetLongPathNameW(path,expanded,(uint)expanded.Capacity);
+  if(n==0||n>=expanded.Capacity)throw new InvalidOperationException("enrollment_image_path_unavailable");
+  return expanded.ToString();
+ }
+ public static bool SameImagePath(string actual,string expected) {
+  if(string.Equals(actual,expected,StringComparison.OrdinalIgnoreCase))return true;
+  // The kernel may report an 8.3 path for a process started by a long path.
+  return string.Equals(LongPath(actual),LongPath(expected),StringComparison.OrdinalIgnoreCase);
  }
  public static uint Parent(uint pid) {
   var p=OpenProcess(0x1000,false,pid);if(p==IntPtr.Zero)throw new InvalidOperationException("enrollment_peer_invalid");
@@ -49,7 +61,7 @@ function Assert-CageHostEnrollmentPeer($Context,$Stream) {
     [uint32]$serverPID=0
     if(![Cage.HostEnrollment.Native]::GetNamedPipeServerProcessId($Stream.SafePipeHandle,[ref]$serverPID) -or $serverPID -ne $Context.WorkerPID){throw 'The original host enrollment peer could not be verified.'}
     if([Cage.HostEnrollment.Native]::Started($serverPID) -ne [long]$Context.WorkerStarted -or
-        [Cage.HostEnrollment.Native]::Image($serverPID) -ine $Context.WorkerExe -or
+        ![Cage.HostEnrollment.Native]::SameImagePath([Cage.HostEnrollment.Native]::Image($serverPID),$Context.WorkerExe) -or
         [Cage.HostEnrollment.Native]::UserSID($serverPID) -cne $Context.HostSID -or
         [Cage.HostEnrollment.Native]::Parent($serverPID) -ne $Context.OwnerPID -or
         [Cage.HostEnrollment.Native]::Started([uint32]$Context.OwnerPID) -ne [long]$Context.OwnerStarted -or
@@ -110,8 +122,14 @@ function Stop-CageHostEnrollment($Context) {
     $null=Invoke-CageHostEnrollment $Context @{action='stop'} $null
 }
 
-function Wait-CageHostEnrollment($Context) {
+function Wait-CageHostEnrollment($Context, $Worker) {
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
-    do {try{$null=Invoke-CageHostEnrollment $Context @{action='ready'} $null;return}catch{Start-Sleep -Milliseconds 100}}while([DateTime]::UtcNow -lt $deadline)
+    do {
+        if ($Worker -and $Worker.HasExited) {
+            throw "enrollment_worker_exited (exit=$($Worker.ExitCode)). Check the enrollment error code in operation details, then continue installation."
+        }
+        try { $null=Invoke-CageHostEnrollment $Context @{action='ready'} $null; return }
+        catch { Start-Sleep -Milliseconds 100 }
+    } while ([DateTime]::UtcNow -lt $deadline)
     throw 'The original user enrollment worker did not become available.'
 }

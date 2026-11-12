@@ -579,7 +579,7 @@ export class BrowserClipboard {
     ) {
       void this.attach(p.sessionId, state.tabId).catch(() => {});
     } else if (event.method === "Target.detachedFromTarget") {
-      this.sessions.delete(p.sessionId);
+      this.detachSession(p.sessionId);
     } else if (event.method === "Runtime.executionContextCreated") {
       if (p.context?.auxData?.isDefault)
         state.contexts.set(p.context.id, p.context.auxData.frameId);
@@ -623,6 +623,10 @@ export class BrowserClipboard {
         context: value.context,
       });
     }
+  }
+
+  detachSession(id) {
+    this.sessions.delete(id);
   }
 
   detachTab(id) {

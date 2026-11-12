@@ -43,7 +43,8 @@ func (s *Server) guestSettingsOK(v guestObservation, cfg cage.Config) bool {
 		return guestSettingsMatch(v, cfg)
 	}
 	return macOSZone(v.TZ) == macOSZone(cfg.Timezone) && macOSZone(v.SystemTimezone) == macOSZone(cfg.Timezone) &&
-		macOSLocale(v.ProcessLocale) == macOSLocale(cfg.Locale) && macOSLocale(v.SystemLocale) == macOSLocale(cfg.Locale)
+		macOSLocale(v.ProcessLocale) == macOSLocale(cfg.Locale) && macOSLocale(v.SystemLocale) == macOSLocale(cfg.Locale) &&
+		macOSLocale(v.SystemLanguage) == macOSLocale(cfg.Locale)
 }
 
 func (s *Server) browserSettingsIssue(v browserObservation, cfg cage.Config) string {

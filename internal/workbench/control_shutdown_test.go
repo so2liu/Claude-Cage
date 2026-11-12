@@ -23,19 +23,21 @@ func TestServeShutdownHandoff(t *testing.T) {
 		return
 	}
 	for _, tc := range []struct {
-		name, saved        string
-		timezone, language bool
+		name, saved                  string
+		timezone, language, balanced bool
 	}{
-		{"fresh profile", "", true, true},
-		{"legacy missing fields", `{"keyboard":"native"}`, true, false},
-		{"saved manual choice", `{"auto_timezone":false,"auto_language":false}`, false, false},
-		{"saved automatic choice", `{"auto_timezone":true,"auto_language":true}`, true, true},
+		{"fresh profile", "", true, true, true},
+		{"legacy missing fields", `{"keyboard":"native"}`, true, false, false},
+		{"saved manual choice", `{"auto_timezone":false,"auto_language":false}`, false, false, false},
+		{"saved automatic choice", `{"auto_timezone":true,"auto_language":true}`, true, true, false},
+		{"saved sharp display", `{"balanced_display":false}`, true, false, false},
+		{"saved balanced display", `{"balanced_display":true}`, true, false, true},
 	} {
-		t.Run(tc.name, func(t *testing.T) { testServeShutdownHandoff(t, tc.saved, tc.timezone, tc.language) })
+		t.Run(tc.name, func(t *testing.T) { testServeShutdownHandoff(t, tc.saved, tc.timezone, tc.language, tc.balanced) })
 	}
 }
 
-func testServeShutdownHandoff(t *testing.T, saved string, timezone, language bool) {
+func testServeShutdownHandoff(t *testing.T, saved string, timezone, language, balanced bool) {
 	const helperConfig = "CAGE_TEST_SHUTDOWN_CONFIG"
 
 	// Keep both the profile and its sibling workspace under the test directory.
@@ -114,6 +116,9 @@ func testServeShutdownHandoff(t *testing.T, saved string, timezone, language boo
 	}
 	if preferences.AutoTimezone != timezone || preferences.AutoLanguage != language {
 		t.Fatalf("automatic defaults/override: timezone=%t language=%t", preferences.AutoTimezone, preferences.AutoLanguage)
+	}
+	if preferences.BalancedDisplay != balanced {
+		t.Fatalf("display default/override: balanced=%t", preferences.BalancedDisplay)
 	}
 
 	lock, err := os.OpenFile(filepath.Join(profile, "control.lock"), os.O_RDWR, 0600)

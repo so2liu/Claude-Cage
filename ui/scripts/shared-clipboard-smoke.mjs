@@ -10,6 +10,7 @@ const writes = [];
 const { browser, page, state, errors } = await createWorkbench({
   mockWebSockets: false, url: display.url,
   nativeRequest: request => {
+    if (request.action === "clipboardWrite") { clipboard = { text: request.text }; revision++; return true; }
     if (request.action === "clipboardRevision") return revision;
     if (request.action === "clipboardSyncRead") return { ...clipboard, revision };
     if (request.action === "clipboardSyncWrite") {
@@ -52,11 +53,19 @@ try {
   await waitFor(() => clipboard.text === "guest background copy");
   assert.equal(display.stats.clipboardConnections,1,"hiding a canvas retains the shared clipboard");
 
+  await page.getByRole("button", { name: "新建终端", exact: true }).first().click();
+  await page.getByRole("menuitem", { name: "普通终端", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".xterm-rows")?.textContent.includes("Terminal"));
+  await page.locator(".xterm-helper-textarea").focus();
+  const terminalCopy = "Claude 终端复制 → 共享剪贴板";
+  display.terminalOutput(`\x1b]52;c;${Buffer.from(terminalCopy).toString("base64")}\x07`);
+  await waitFor(() => clipboard.text === terminalCopy && display.stats.clipboardUpdates.at(-1).text === terminalCopy);
+
   const connections = display.stats.clipboardConnections;
   display.disconnectClipboard();
   clipboard = { text:"copy during disconnection" }; revision++;
   await waitFor(() => display.stats.clipboardConnections > connections && display.stats.clipboardUpdates.at(-1).text === "copy during disconnection");
   await page.waitForFunction(() => window.cageSharedClipboardActive === true);
   assert.deepEqual(errors,[]);
-  console.log("PASS: Desktop text/image/files copy, no echo, native paste, background sharing, disconnect and fresh host snapshot on reconnect.");
+  console.log("PASS: Desktop text/image/files copy, terminal OSC 52 to shared guest clipboard, no echo, native paste, background sharing and reconnect.");
 } finally { await browser.close(); await display.close(); }

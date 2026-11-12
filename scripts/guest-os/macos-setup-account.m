@@ -36,6 +36,20 @@ static BOOL member(ODRecord *group, ODRecord *user) {
     return result;
 }
 
+static void setMember(ODRecord *group, ODRecord *user, BOOL expected) {
+    if (member(group, user) == expected) return;
+    require(expected ? [group addMemberRecord:user error:NULL] : [group removeMemberRecord:user error:NULL],
+        expected ? "Cannot grant temporary setup privileges." : "Cannot revoke setup administrator privileges.");
+    require([group synchronizeAndReturnError:NULL], "Cannot synchronize guest administrator privileges.");
+    // OD membership queries use the system membership cache. After a successful
+    // directory write, wait briefly for that cache to reflect the committed state.
+    for (int attempt = 0; attempt < 50; attempt++) {
+        if (member(group, user) == expected) return;
+        usleep(100000);
+    }
+    require(NO, expected ? "Guest setup privileges were not applied." : "The setup user still has administrator privileges.");
+}
+
 static BOOL disabled(ODRecord *record) {
     NSError *error = nil;
     BOOL allowed = [record authenticationAllowedAndReturnError:&error];
@@ -118,8 +132,7 @@ static void synchronize(ODRecord *ordinary, ODRecord *setupRecord, NSDictionary 
 }
 
 static void retire(ODNode *node, ODRecord *admin, ODRecord *record) {
-    if (member(admin, record)) require([admin removeMemberRecord:record error:NULL], "Cannot revoke setup administrator privileges.");
-    require(!member(admin, record), "The setup user still has administrator privileges.");
+    setMember(admin, record, NO);
     if (!disabled(record)) {
         // Invalidate the initial guest password before disabling the account.
         // This replacement is never persisted or exposed to a caller.
@@ -231,8 +244,7 @@ int main(int argc, const char **argv) {
             // authorizationhost rejects it during account management.
             if ([[record valuesForAttribute:kODAttributeTypeUserShell error:NULL].firstObject isEqual:@"/usr/bin/false"])
                 require([record setValue:@"/bin/sh" forAttribute:kODAttributeTypeUserShell error:NULL], "Cannot repair the temporary account's login shell.");
-            if (!member(admin, record)) require([admin addMemberRecord:record error:NULL], "Cannot grant temporary setup privileges.");
-            require(member(admin, record), "Guest setup privileges were not applied.");
+            setMember(admin, record, YES);
             receipt[@"state"] = @"ready";
         } else {
             require(![phase isEqual:@"creating"], "The temporary account has not completed setup.");

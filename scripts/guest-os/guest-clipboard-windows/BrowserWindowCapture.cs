@@ -382,8 +382,20 @@ internal static class BrowserWindowCapture
         if(!SetCursorPos(screenX,screenY))throw new InvalidDataException("browser_input_failed");
         var mouseMask=NativeGuestInput.PressedButtons(lease);var inputs=new List<InputStroke>();
         foreach(var bit in new[]{1,2,4})if((mask&bit)!=(mouseMask&bit))inputs.Add(InputStroke.Button(bit,(mask&bit)==0));
-        if((mask&24)!=0)inputs.Add(InputStroke.Wheel((mask&8)!=0?120:-120));
-        if((mask&96)!=0)inputs.Add(InputStroke.Wheel((mask&32)!=0?-120:120,true));
+        if(input["deltaX"] is not null||input["deltaY"] is not null)
+        {
+            // A viewer that sends the scrolled distance gets that distance in
+            // native menus as well: 100 pixels are one wheel notch.
+            var deltaX=input["deltaX"]?.GetValue<int>()??0;var deltaY=input["deltaY"]?.GetValue<int>()??0;
+            if(Math.Abs(deltaX)>2048||Math.Abs(deltaY)>2048)throw new InvalidDataException("browser_input_invalid");
+            if(deltaY!=0)inputs.Add(InputStroke.Wheel(-deltaY*120/100));
+            if(deltaX!=0)inputs.Add(InputStroke.Wheel(deltaX*120/100,true));
+        }
+        else
+        {
+            if((mask&24)!=0)inputs.Add(InputStroke.Wheel((mask&8)!=0?120:-120));
+            if((mask&96)!=0)inputs.Add(InputStroke.Wheel((mask&32)!=0?-120:120,true));
+        }
         if(inputs.Count>0)Emit(view,lease,inputs.ToArray());
     }
     private static void Keyboard(View view,InputLease lease,JsonObject input)

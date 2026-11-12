@@ -45,6 +45,7 @@ type macSetupPermissions struct {
 	Screen            bool   `json:"screen"`
 	Input             bool   `json:"input"`
 	Projects          bool   `json:"projects"`
+	ProjectsError     string `json:"projects_error,omitempty"`
 	Error             string `json:"error,omitempty"`
 	ManagedCredential bool   `json:"managed_credential,omitempty"`
 }
@@ -129,8 +130,11 @@ func (s *Server) macSetupPermissions(ctx context.Context) (macSetupPermissions, 
 		s.mu.Lock()
 		s.macSetupProjectsAttempt = time.Now()
 		s.mu.Unlock()
-		_ = s.checkMacOSSetupProjects(ctx)
+		probeErr := s.checkMacOSSetupProjects(ctx)
 		s.op.Unlock()
+		if probeErr != nil {
+			status.ProjectsError = probeErr.Error()
+		}
 		s.mu.Lock()
 		status.Projects = !s.macSetupProjectsChecked.IsZero()
 		s.mu.Unlock()

@@ -168,9 +168,11 @@ footer a:hover,
   box-shadow: 0 3px 0 #99402626;
 }
 .download-dialog {
+  --dialog-padding: 30px;
   width: min(980px, calc(100% - 32px));
   max-height: calc(100dvh - 32px);
-  padding: 30px;
+  overflow-y: auto;
+  padding: var(--dialog-padding);
   color: inherit;
   background: #faf8f4;
   border: 1px solid var(--line);
@@ -184,6 +186,12 @@ body:has(.download-dialog[open]) {
   overflow: hidden;
 }
 .dialog-heading {
+  position: sticky;
+  top: calc(-1 * var(--dialog-padding));
+  z-index: 1;
+  background: #faf8f4;
+  margin-top: calc(-1 * var(--dialog-padding));
+  padding-top: var(--dialog-padding);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -255,7 +263,7 @@ body:has(.download-dialog[open]) {
   margin-top: 16px;
 }
 @media (max-width: 760px) {
-  .download-dialog { padding: 22px; }
+  .download-dialog { --dialog-padding: 22px; }
   .platform-options { grid-template-columns: 1fr; }
   .platform-option { padding: 18px; }
 }

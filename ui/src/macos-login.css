@@ -143,3 +143,12 @@
 [data-mode="maintenance"] .mac-setup-hint { position: relative; inset: auto; pointer-events: auto; margin: 0 12px 8px; }
 [data-mode="maintenance"] .mac-login-status { position: relative; inset: auto; flex-shrink: 0; margin: 8px 12px; }
 .project-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* Keep guidance and recovery controls outside the guest image. */
+.mac-login-fullscreen[data-mode="setup"] { display: grid; place-items: center; padding: 16px; background: #0008; }
+[data-mode="setup"] .mac-login-panel { position: relative; inset: auto; display: flex; flex-direction: column; width: min(1160px, 100%); height: min(960px, calc(100dvh - 32px)); overflow: hidden; border: 1px solid #ffffff32; border-radius: 16px; background: #17191e; }
+[data-mode="setup"] .mac-login-heading { flex-shrink: 0; }
+[data-mode="setup"] .mac-login-tools { position: relative; inset: auto; align-self: flex-start; flex-shrink: 0; margin: 0 12px 8px; box-shadow: none; }
+[data-mode="setup"] .mac-login-stage { position: relative; flex: 1; min-height: 100px; overflow: auto; }
+[data-mode="setup"] .mac-setup-hint { position: relative; inset: auto; flex-shrink: 0; max-height: 28dvh; overflow: auto; margin: 0 12px 8px; pointer-events: auto; }
+[data-mode="setup"] .mac-login-status { position: relative; inset: auto; flex-shrink: 0; margin: 8px 12px; }
+@media (max-width: 600px) { .mac-login-fullscreen[data-mode="setup"] { padding: 6px; } [data-mode="setup"] .mac-login-panel { height: calc(100dvh - 12px); } [data-mode="setup"] .mac-login-heading { padding: 12px; } }

@@ -20,6 +20,26 @@ const fileLimit = 2 * 1024 * 1024 * 1024;
 const imageLimit = 20 << 20;
 const textLimit = 2 << 20;
 const lineLimit = 128 << 10;
+function jpegFrameSize(value) {
+  if (typeof value !== "string" || value.length > 12 << 20) return null;
+  const bytes = Buffer.from(value.slice(0, 128 << 10), "base64");
+  if (bytes.length < 4 || bytes.readUInt16BE(0) !== 0xffd8) return null;
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset++] !== 0xff) return null;
+    while (bytes[offset] === 0xff) offset++;
+    const marker = bytes[offset++];
+    if (marker === 0xda || marker === 0xd9) return null;
+    if (marker === 0x01 || marker >= 0xd0 && marker <= 0xd7) continue;
+    if (offset + 2 > bytes.length) return null;
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || offset + length > bytes.length) return null;
+    if ([0xc0, 0xc1, 0xc2].includes(marker) && length >= 8)
+      return { width: bytes.readUInt16BE(offset + 5), height: bytes.readUInt16BE(offset + 3) };
+    offset += length;
+  }
+  return null;
+}
 // Playwright appends <-loopback> unless already present. Put it first so the
 // following exact loopback rules can reach authorized local project services.
 const proxyBypass = "<-loopback>,127.0.0.1,localhost,*.cage-editor.localhost";
@@ -125,6 +145,11 @@ export function browserExecutable() {
 // guest's browser mode, fixed executable, and Cage-owned profile.
 export function createNativeBrowserService(options = {}) {
   const mac = options.platform === "darwin";
+  const continuousFrames = !mac && options.continuousFrames !== false;
+  // The dedicated Windows controller streams the live viewport even when a
+  // site hasn't finished downloading fonts. Playwright otherwise waits on
+  // document.fonts.ready for every screenshot, blocking the input queue too.
+  if (!mac) process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY = "1";
   const directory = options.directory ?? path.join(process.env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local"), "Cage", "Browser");
   const selectionFile = path.join(directory, "tabs.json");
   const uploadDirectory = path.join(directory, "Uploads");
@@ -134,7 +159,8 @@ export function createNativeBrowserService(options = {}) {
   let timezone, language;
   let viewport = { width: 1140, height: 700 }, persistQueue = Promise.resolve();
   const tabs = new Map(), byPage = new WeakMap(), sessions = new Map(), frameSessions = new WeakMap(), internalPages = new WeakSet();
-  const captures = new Map();
+  const captures = new Map(), stoppingCaptures = new Map();
+  let activeRequests = 0;
   const events = [], transfers = new Map(), privateContexts = new Set(), editorConnections = new Map(), logins = new Map();
   const clipboardCopies = new Map();
   let clipboardHelper, copyVersion = 0, pendingCopy, copying;
@@ -142,7 +168,7 @@ export function createNativeBrowserService(options = {}) {
   let stateVersion = 0, snapshotVersion = -1, snapshotAt = 0, snapshotCache;
   let rfbTarget = "", rfbMask = 0, lastClick, rfbPointer;
   let split, rfbPane;
-  const captureMetrics = { screenshots: 0, total_ms: 0, damage_frames: 0 };
+  const captureMetrics = { screenshots: 0, total_ms: 0, damage_frames: 0, streamed_frames: 0, encoded_bytes: 0, invalid_frames: 0, fallbacks: 0 };
   const heldKeys = new Map();
   let inputOwner, keyTarget;
 
@@ -287,30 +313,111 @@ export function createNativeBrowserService(options = {}) {
   }
   function changed() { stateVersion++; emit("state", { active }); remember(); }
 
+  async function restoreCaptureMetrics(tab) {
+    if (!tab?.restoreCaptureMetrics || tab.page.isClosed()) return;
+    const session = sessions.get(tab.session);
+    await session.send("Emulation.setDeviceMetricsOverride", {
+      ...tab.page.viewportSize(), deviceScaleFactor: displayScale, mobile: false,
+      scale: 1, dontSetVisibleSize: false,
+    });
+    await session.send("Emulation.setVisibleSize", tab.page.viewportSize());
+    tab.inputScale = 1;
+    tab.restoreCaptureMetrics = false;
+  }
+
   async function stopCapture(page) {
+    if (stoppingCaptures.has(page)) return stoppingCaptures.get(page);
     const capture = captures.get(page);
     if (!capture) return;
     captures.delete(page);
     clearTimeout(capture.expiry);
     capture.connection.off("Page.screencastFrame", capture.receive);
-    await capture.connection.send("Page.stopScreencast").catch(() => {});
-    await capture.connection.detach().catch(() => {});
+    const stopping = (async () => {
+      await capture.connection.send("Page.stopScreencast").catch(() => {});
+      try {
+        if (capture.metrics && !page.isClosed()) {
+          const tab = byPage.get(page);
+          // A failed restore remains pending: subsequent input must retry it,
+          // never proceed with a silently stale coordinate mapping.
+          tab.restoreCaptureMetrics = true;
+          await restoreCaptureMetrics(tab);
+        }
+      } finally {
+        await capture.connection.detach().catch(() => {});
+      }
+    })();
+    stoppingCaptures.set(page, stopping);
+    try { await stopping; } finally { stoppingCaptures.delete(page); }
+  }
+
+  function expireCapture(tab, capture) {
+    clearTimeout(capture.expiry);
+    capture.expiry = setTimeout(() => {
+      if (captures.get(tab.page) !== capture) return;
+      // Never change the input coordinate mapping halfway through a request.
+      if (activeRequests) { expireCapture(tab, capture); return; }
+      void stopCapture(tab.page).catch(() => { tab.captureFallback = true; });
+    }, 1500);
+    capture.expiry.unref?.();
   }
 
   async function captureFrame(tab) {
+    await stoppingCaptures.get(tab.page);
     const size = tab.page.viewportSize();
+    // HiDPI surface scaling also affects native menus. Keep the established
+    // screenshot path by default until the native popup comparison is verified.
+    const streaming = continuousFrames && !tab.captureFallback &&
+      (displayScale === 1 || options.continuousFrames === true);
     const key = `${tab.document}:${tab.geometry}:${size.width}:${size.height}:${displayScale}`;
     let capture = captures.get(tab.page);
     if (capture && capture.key !== key) { await stopCapture(tab.page); capture = undefined; }
     if (!capture) {
       const connection = await tab.page.context().newCDPSession(tab.page);
-      capture = { key, connection, latest: null, ack: null, expiry: null };
+      capture = { key, connection, latest: null, acks: new Set(), expiry: null, metrics: false };
       captures.set(tab.page, capture);
       let received;
       const first = new Promise(resolve => { received = resolve; });
       capture.receive = frame => {
         if (captures.get(tab.page) !== capture) return;
         if (!mac) captureMetrics.damage_frames++;
+        capture.acks.add(frame.sessionId);
+        captureMetrics.encoded_bytes += Buffer.byteLength(frame.data, "base64");
+        if (streaming) {
+          capture.resizeDeadline ??= performance.now() + 250;
+          const dimensions = jpegFrameSize(frame.data);
+          if (!dimensions || dimensions.width !== Math.round(size.width * displayScale) || dimensions.height !== Math.round(size.height * displayScale)) {
+            captureMetrics.invalid_frames++;
+            // Resizing can emit several valid old surfaces within one render
+            // tick. Give their geometry a short, bounded settling window;
+            // malformed JPEGs still get at most two startup retries.
+            let warmup = false;
+            if (dimensions) {
+              warmup = performance.now() < capture.resizeDeadline && (capture.resizeFrames || 0) < 16;
+              capture.resizeFrames = (capture.resizeFrames || 0) + 1;
+            } else if (!capture.latest) {
+              warmup = (capture.warmupFrames || 0) < 2;
+              capture.warmupFrames = (capture.warmupFrames || 0) + 1;
+            }
+            if (warmup) {
+              capture.acks.delete(frame.sessionId);
+              const acknowledge = () => connection.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
+              if (dimensions && !capture.resizeRetried) {
+                // A pending native-window resize can overwrite the visible
+                // surface after setup. Reassert it once after observing that
+                // resize; waiting alone cannot repair a persistent old size.
+                capture.resizeRetried = true;
+                void sessions.get(tab.session).send("Emulation.setVisibleSize", {
+                  width: Math.round(size.width * displayScale), height: Math.round(size.height * displayScale),
+                }).then(acknowledge).catch(() => { capture.invalid = true; received(); });
+              } else void acknowledge().catch(() => {});
+              return;
+            }
+            capture.invalid = true;
+            received();
+            return;
+          }
+          captureMetrics.streamed_frames++;
+        }
         // Screenshot capture can itself schedule another compositor frame.
         // An identical damage bitmap must not trigger a screenshot feedback
         // loop or invalidate the viewer's existing static-frame receipt.
@@ -319,16 +426,26 @@ export function createNativeBrowserService(options = {}) {
           // Treat screencast as damage notification. Its macOS bitmap can be
           // a Retina crop with apparently valid dimensions; capture pixels via
           // Playwright's viewport screenshot and cache them until new damage.
-          capture.latest = { sequence: token() };
+          capture.latest = { jpeg: !mac && streaming ? frame.data : undefined, sequence: token() };
         }
-        capture.ack = frame.sessionId;
         received();
       };
       connection.on("Page.screencastFrame", capture.receive);
       try {
-        // Playwright owns viewport and device density. A second metrics override
-        // with a viewport clip makes headed macOS screencast content jump to a
-        // cropped Retina surface even when its JPEG dimensions look correct.
+        if (streaming) {
+          const nativeSession = sessions.get(tab.session);
+          capture.metrics = true;
+          await nativeSession.send("Emulation.setDeviceMetricsOverride", {
+            ...size, deviceScaleFactor: displayScale, mobile: false,
+            dontSetVisibleSize: true, scale: displayScale,
+          });
+          await nativeSession.send("Emulation.setVisibleSize", {
+            width: Math.round(size.width * displayScale), height: Math.round(size.height * displayScale),
+          });
+          tab.inputScale = displayScale;
+        }
+        // Playwright owns the Mac viewport. A second metrics override with a
+        // viewport clip can crop its Retina surface despite valid dimensions.
         await connection.send("Page.startScreencast", {
           format: "jpeg", quality: 85,
           maxWidth: Math.round(size.width * displayScale), maxHeight: Math.round(size.height * displayScale),
@@ -342,40 +459,47 @@ export function createNativeBrowserService(options = {}) {
             timeout = setTimeout(() => mac ? resolve() : reject(failure("frame_unavailable", "浏览器画面流尚未就绪")), mac ? 300 : 5000);
           })]);
         } finally { clearTimeout(timeout); }
-        // A static Mac page may emit no damage after resizing. Seed its first
-        // frame through the same full-viewport fallback instead of reconnecting.
         if (mac && !capture.latest) capture.latest = { sequence: token() };
-      } catch (error) { await stopCapture(tab.page); throw error; }
+      } catch (error) {
+        await stopCapture(tab.page);
+        if (!streaming) throw error;
+        tab.captureFallback = true;
+        captureMetrics.fallbacks++;
+        return captureFrame(tab);
+      }
     }
     clearTimeout(capture.expiry);
+    if (capture.invalid) {
+      await stopCapture(tab.page);
+      tab.captureFallback = true;
+      captureMetrics.fallbacks++;
+      return captureFrame(tab);
+    }
     try {
       const frame = capture.latest;
       // Windows screencast preserves a damage stream at CSS resolution, but a
       // viewport scale changes its native input surface. Capture only new damage
       // at the context's actual device density and reuse it for static frames.
-      const expected = { width: Math.round(size.width * displayScale), height: Math.round(size.height * displayScale) };
-      const actual = mac && frame.jpeg ? browserJPEGDimensions(frame.jpeg) : null;
-      if (!frame.jpeg || mac && (actual?.width !== expected.width || actual?.height !== expected.height)) {
+      if (!frame.jpeg) {
         const started = performance.now();
-        frame.jpeg = (await tab.page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
-        const captured = browserJPEGDimensions(frame.jpeg);
-        if (captured?.width !== expected.width || captured?.height !== expected.height)
+        frame.jpeg = (await tab.page.screenshot({ type: "jpeg", quality: 85, caret: "initial" })).toString("base64");
+        const dimensions = browserJPEGDimensions(frame.jpeg);
+        if (dimensions?.width !== Math.round(size.width * displayScale) || dimensions?.height !== Math.round(size.height * displayScale))
           throw failure("frame_unavailable", "浏览器画面尺寸尚未同步");
         captureMetrics.screenshots++;
         captureMetrics.total_ms += performance.now() - started;
       }
-      if (capture.ack !== null) {
-        const sessionId = capture.ack;
-        capture.ack = null;
+      // Return credit only when the viewer consumes a frame. Chromium's bounded
+      // in-flight window supplies backpressure even during continuous animation.
+      const acknowledgements = [...capture.acks];
+      capture.acks.clear();
+      for (const sessionId of acknowledgements)
         await capture.connection.send("Page.screencastFrameAck", { sessionId });
-      }
       return frame;
     } finally {
-      // A full-viewport fallback can take longer than the idle lease on a
-      // busy page. Reclaim only an idle capture, never its in-flight CDP work.
+      // Only time spent between requests counts as viewer inactivity.
       if (captures.get(tab.page) === capture) {
-        capture.expiry = setTimeout(() => { void stopCapture(tab.page); }, 1500);
-        capture.expiry.unref?.();
+        expireCapture(tab, capture);
       }
     }
   }
@@ -386,27 +510,54 @@ export function createNativeBrowserService(options = {}) {
     // Playwright owns out-of-process-frame discovery. It does not expose raw
     // flattened child session transports, so each Frame gets its own CDPSession.
     if (method === "Target.setAutoAttach") return {};
+    if (method === "Input.dispatchMouseEvent") {
+      const tab = [...tabs.values()].find(tab => tab.session === sessionID);
+      const scale = tab?.inputScale ?? 1;
+      params = { ...params, x: params.x * scale, y: params.y * scale };
+    }
     return session.send(method, params);
   }
+  function detachFrame(tab, frame, expected) {
+    const id = tab.frameSessions.get(frame);
+    if (!id || expected && expected !== id) return;
+    tab.frameSessions.delete(frame);
+    frameSessions.delete(frame);
+    const connection = sessions.get(id);
+    sessions.delete(id);
+    clipboard.detachSession(id);
+    // Explicit detach also releases Playwright's transport and event listeners.
+    void connection?.detach().catch(() => {});
+  }
+
   async function attachFrame(tab, frame) {
     if (frameSessions.has(frame) || frame.isDetached()) return;
+    const id = token();
+    // Navigation and frameattached can race while newCDPSession is pending.
+    frameSessions.set(frame, id);
+    tab.frameSessions.set(frame, id);
     try {
-      const connection = await tab.page.context().newCDPSession(frame), id = token();
-      frameSessions.set(frame, id); sessions.set(id, connection);
+      const connection = await tab.page.context().newCDPSession(frame);
+      if (tab.page.isClosed() || frame.isDetached() || frameSessions.get(frame) !== id) {
+        detachFrame(tab, frame, id);
+        await connection.detach().catch(() => {});
+        return;
+      }
+      sessions.set(id, connection);
       for (const method of ["Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared", "Runtime.bindingCalled", "Page.frameDetached", "Page.frameNavigated"]) {
         connection.on(method, params => clipboard.event({ sessionId: id, method, params }));
       }
       await clipboard.attach(id, tab.id);
       if (tab.copyContext) await clipboard.setContext(tab.id, tab.copyContext);
-    } catch { /* A navigation can destroy a frame while its session attaches. */ }
+    } catch { detachFrame(tab, frame, id); }
   }
   async function addPage(page, { id = token(), incognito = false, login = false, kind = "web", workspace, blocked = false } = {}) {
     if (byPage.has(page)) { const existing = byPage.get(page); await existing.ready; return existing; }
     if (tabs.size >= 100) { await page.close(); throw failure("tab_limit", "打开的标签页过多，请先关闭部分标签页"); }
-    const tab = { id, page, incognito, login, kind, workspace, blocked, document: token(), geometry: token(), title: "", copyContext: "" };
+    const tab = { id, page, incognito, login, kind, workspace, blocked, document: token(), geometry: token(), title: "", copyContext: "", frameSessions: new Map() };
     tabs.set(id, tab); byPage.set(page, tab);
     page.on("close", () => {
       void stopCapture(page);
+      for (const frame of tab.frameSessions.keys()) detachFrame(tab, frame);
       tabs.delete(id); clipboard?.detachTab(id); uploads?.cancelTab(id);
       if (active === id) invalidateCopies();
       if (vault) for (const [sid, entry] of vault.sessions) if (entry.tab === id) vault.sessions.delete(sid);
@@ -439,17 +590,19 @@ export function createNativeBrowserService(options = {}) {
     });
     page.on("frameattached", frame => { void attachFrame(tab, frame); });
     page.on("domcontentloaded", changed);
-    page.on("framedetached", frame => { const sid = frameSessions.get(frame); sessions.delete(sid); });
+    page.on("framedetached", frame => detachFrame(tab, frame));
     tab.ready = (async () => {
     // A persistent context keeps its launch viewport for newly opened pages.
     // Each tab must join the workbench's current viewport before capture starts.
     await page.setViewportSize(viewport);
     const connection = await page.context().newCDPSession(page), sid = token();
+    if (page.isClosed()) { await connection.detach().catch(() => {}); return; }
+    tab.session = sid; sessions.set(sid, connection); frameSessions.set(page.mainFrame(), sid);
+    tab.frameSessions.set(page.mainFrame(), sid);
     // Playwright enables focus emulation for every page. Native input proofs
     // must observe the real selected document and native Chrome UI focus.
     if (!mac && !(options.testing === true && options.headless !== false)) await connection.send("Emulation.setFocusEmulationEnabled", { enabled: false });
     tab.browserContextId = (await connection.send("Target.getTargetInfo")).targetInfo.browserContextId;
-    tab.session = sid; sessions.set(sid, connection); frameSessions.set(page.mainFrame(), sid);
     tab.nativeTarget = (await connection.send("Target.getTargetInfo")).targetInfo.targetId;
     for (const method of ["Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared", "Runtime.bindingCalled", "Page.frameDetached", "Page.frameNavigated"]) {
       connection.on(method, params => { clipboard.event({ sessionId: sid, method, params }); vault?.event({ sessionId: sid, method, params }); });
@@ -516,8 +669,10 @@ export function createNativeBrowserService(options = {}) {
           chromiumSandbox: true, viewport, deviceScaleFactor: displayScale, acceptDownloads: true,
           ...(timezone ? { timezoneId: timezone } : {}), ...(language ? { locale: language } : {}),
           ...(networkMode === "proxy" ? { proxy: { server: proxy, bypass: proxyBypass } } : {}),
-          args: ["--disable-quic", "--no-first-run", "--no-default-browser-check", "--restore-last-session", "--disable-session-crashed-bubble", "--host-resolver-rules=MAP *.cage-editor.localhost 127.0.0.1", ...(networkMode === "packet" ? ["--no-proxy-server"] : []), ...(extensionTools ? ["--enable-unsafe-extension-debugging", `--load-extension=${splitDirectory}`] : [])],
-          ignoreDefaultArgs: [...(extensionTools ? ["--disable-extensions"] : []), ...(mac ? ["--mute-audio"] : [])], timeout: 20000,
+          // CDP transports the user's input. Preserve the native browser identity
+          // in every context, including private pages that cannot load extensions.
+          args: ["--disable-blink-features=AutomationControlled", "--disable-quic", "--no-first-run", "--no-default-browser-check", "--restore-last-session", "--disable-session-crashed-bubble", "--host-resolver-rules=MAP *.cage-editor.localhost 127.0.0.1", ...(networkMode === "packet" ? ["--no-proxy-server"] : []), ...(extensionTools ? ["--enable-unsafe-extension-debugging", `--load-extension=${splitDirectory}`] : [])],
+          ignoreDefaultArgs: ["--enable-automation", ...(extensionTools ? ["--disable-extensions"] : []), ...(mac ? ["--mute-audio"] : [])], timeout: 20000,
         });
       } catch (error) { if (error.code) throw error; throw failure("browser_unavailable", "Windows 客机图形浏览器未能启动，请检查 GUI 会话和安装组件"); }
       context.setDefaultTimeout(7000); owner = context.browser();
@@ -656,7 +811,8 @@ export function createNativeBrowserService(options = {}) {
     const left = Math.max(80, Math.min(viewport.width - 80, Math.floor(viewport.width * (split?.fraction || 0.5))));
     for (const tab of tabs.values()) {
       const width = split?.left === tab.id ? left : split?.right === tab.id ? viewport.width - left : viewport.width;
-      await tab.page.setViewportSize({ width, height: viewport.height }); tab.geometry = token();
+      await stopCapture(tab.page);
+      await tab.page.setViewportSize({ width, height: viewport.height }); tab.inputScale = 1; tab.geometry = token();
     }
     if (split) split.generation = token();
   }
@@ -752,7 +908,32 @@ export function createNativeBrowserService(options = {}) {
   async function ime(input) {
     const tab = target(input);
     if (input.target !== "browser") throw failure("input_unavailable", "Windows 客机桌面输入法应通过原生窗口通道操作");
-    if (input.mode === "status") return caret(tab);
+    if (input.mode === "status") {
+      const state = await caret(tab);
+      if (rfbPointer?.tab === tab && rfbPointer.document === tab.document) {
+        const { x, y } = rfbPointer;
+        const result = await cdp("Runtime.evaluate", {
+          expression: `(() => {
+            let element = document.elementFromPoint(${JSON.stringify(x)}, ${JSON.stringify(y)});
+            while (element?.shadowRoot) {
+              const child = element.shadowRoot.elementFromPoint(${JSON.stringify(x)}, ${JSON.stringify(y)});
+              if (!child || child === element) break;
+              element = child;
+            }
+            if (!element) return 'default';
+            const cursor = getComputedStyle(element).cursor;
+            if (cursor !== 'auto') return cursor;
+            const editable = element.isContentEditable || element.tagName === 'TEXTAREA' ||
+              (element.tagName === 'INPUT' && ['text','search','url','tel','email','password','number'].includes(element.type));
+            return editable ? 'text' : 'default';
+          })()`,
+          returnByValue: true,
+        }, tab.session);
+        const cursor = result.result?.value;
+        state.cursor = ["text", "pointer", "default"].includes(cursor) ? cursor : "default";
+      }
+      return state;
+    }
     input = { text: "", selectionStart: 0, selectionEnd: 0, ...input };
     if (!tokenPattern.test(input.session || "") || !Number.isSafeInteger(input.sequence) || input.sequence < 0 || typeof input.text !== "string" || Buffer.byteLength(input.text) > 8192)
       throw failure("invalid_input", "输入法组合状态无效");
@@ -760,7 +941,7 @@ export function createNativeBrowserService(options = {}) {
       const status = await caret(tab);
       if (!status.available || input.context !== status.context) throw failure("target_changed", "Input target changed");
       composition = { id: tab.id, document: tab.document, context: status.context, session: input.session, sequence: input.sequence };
-      return { ok: true };
+      return { ...status, ok: true };
     }
     if (!composition || composition.id !== tab.id || composition.document !== tab.document || composition.session !== input.session || input.sequence <= composition.sequence)
       throw failure("target_changed", "Input target changed");
@@ -776,7 +957,7 @@ export function createNativeBrowserService(options = {}) {
     } else if (input.mode === "cancel") {
       await cdp("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 }, tab.session); composition = undefined;
     } else throw failure("invalid_input", "输入法组合状态无效");
-    return { ok: true };
+    return { ...status, ok: true };
   }
   function checkTransfer(input) {
     const transfer = transfers.get(input.transfer);
@@ -957,6 +1138,10 @@ export function createNativeBrowserService(options = {}) {
     if (input.target !== (split?.generation ?? tab.geometry)) throw failure("target_changed", "Input target changed");
     if (input.kind === "pointer") {
       if (!Number.isInteger(input.mask) || input.mask < 0 || input.mask > 127 || ![input.x, input.y].every(Number.isFinite) || input.x < 0 || input.y < 0 || input.x >= viewport.width * displayScale || input.y >= viewport.height * displayScale) throw failure("invalid_input", "指针位置无效");
+      // Frames announce pixelWheel; a viewer may then send the scrolled
+      // distance in pixels in place of one fixed step per event.
+      const pixelWheel = input.deltaX !== undefined || input.deltaY !== undefined;
+      if (pixelWheel && (![input.deltaX, input.deltaY].every(v => Number.isInteger(v) && Math.abs(v) <= 2048) || (input.mask & 7) || !(input.mask & 120))) throw failure("invalid_input", "滚动距离无效");
       const x = Math.max(0, Math.min(tab.page.viewportSize().width - 1, (input.x - xOffset) / displayScale)), y = input.y / displayScale, mask = input.mask & 7;
       const modifiers = Number.isInteger(input.modifiers) && input.modifiers >= 0 && input.modifiers <= 15 ? input.modifiers : 0;
       const buttons = ((mask & 1) ? 1 : 0) | ((mask & 2) ? 4 : 0) | ((mask & 4) ? 2 : 0);
@@ -970,8 +1155,8 @@ export function createNativeBrowserService(options = {}) {
         if (down) lastClick = { button, x, y, count, time: now };
       }
       signal?.throwIfAborted();
-      await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons, modifiers }, tab.session);
-      const deltaY = (input.mask & 8 ? -80 : 0) + (input.mask & 16 ? 80 : 0), deltaX = (input.mask & 32 ? -80 : 0) + (input.mask & 64 ? 80 : 0);
+      if (!pixelWheel) await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons, modifiers }, tab.session);
+      const deltaY = pixelWheel ? input.deltaY : (input.mask & 8 ? -80 : 0) + (input.mask & 16 ? 80 : 0), deltaX = pixelWheel ? input.deltaX : (input.mask & 32 ? -80 : 0) + (input.mask & 64 ? 80 : 0);
       if (deltaX || deltaY) await cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX, deltaY, buttons, modifiers }, tab.session);
       rfbMask = mask; if (!mask) rfbPane = undefined; return { ok: true, active };
     }
@@ -1047,7 +1232,11 @@ export function createNativeBrowserService(options = {}) {
     if (method === "GET") {
       if (action === "frame-proof") return nativeFrameProof();
       if (action === "focus-proof") return nativeFocusProof();
-      if (action === "health") return { ready: true, native: !options.testing, capabilities: (await snapshot()).capabilities, ...(!mac ? { capture: { ...captureMetrics } } : {}) };
+      if (action === "health") return {
+        ready: true, native: !options.testing, capabilities: (await snapshot()).capabilities,
+        resources: { tabs: tabs.size, sessions: sessions.size, clipboard_sessions: clipboard.sessions.size, captures: captures.size },
+        ...(!mac ? { capture: { ...captureMetrics } } : {}),
+      };
       if (action === "tabs") return snapshot();
       if (action === "events") {
         const after = Number.isSafeInteger(input.after) && input.after >= 0 ? input.after : 0;
@@ -1219,7 +1408,7 @@ export function createNativeBrowserService(options = {}) {
           panes.push({ jpeg, x, y: 0, width, height, id, document }); x += width;
         }
         if (bytes > 8 << 20) throw failure("frame_limit", "浏览器画面过大，请缩小窗口后重试");
-        return { sequence, target: generation, width: x, height: Math.round(viewport.height * displayScale), scale: displayScale, panes, active, native: await nativeFrameProof() };
+        return { sequence, target: generation, width: x, height: Math.round(viewport.height * displayScale), scale: displayScale, panes, active, pixelWheel: true, native: await nativeFrameProof() };
       }
       const geometry = tab.geometry, document = tab.document;
       const captured = await captureFrame(tab);
@@ -1227,7 +1416,7 @@ export function createNativeBrowserService(options = {}) {
       if (tab.id !== active || tab.geometry !== geometry || tab.document !== document) throw failure("target_changed", "Input target changed");
       if (input.after === sequence) return { unchanged: true, sequence, ...(input.nativeProof ? { native: await nativeFrameProof() } : {}) };
       if (Buffer.byteLength(captured.jpeg, "base64") > 8 << 20) throw failure("frame_limit", "浏览器画面过大，请缩小窗口后重试");
-      return { ...(mac ? {url: page.url(), title: await page.title()} : {}), sequence, id: tab.id, document, jpeg: captured.jpeg, target: geometry, width: Math.round(viewport.width * displayScale), height: Math.round(viewport.height * displayScale), cssWidth: viewport.width, cssHeight: viewport.height, scale: displayScale, native: await nativeFrameProof() };
+      return { ...(mac ? {url: page.url(), title: await page.title()} : {}), sequence, id: tab.id, document, jpeg: captured.jpeg, target: geometry, width: Math.round(viewport.width * displayScale), height: Math.round(viewport.height * displayScale), cssWidth: viewport.width, cssHeight: viewport.height, scale: displayScale, pixelWheel: true, native: await nativeFrameProof() };
     }
     if (action === "activate") return activate(tab.id);
     if (action === "close") { await page.close(); if (!tabs.size) await addPage(await context.newPage()); if (active) await activate(active); return { ok: true }; }
@@ -1256,8 +1445,8 @@ export function createNativeBrowserService(options = {}) {
       return { ok: true };
     }
     if (["click", "pointer", "wheel"].includes(action)) {
-      const p = point(input, page.viewportSize()); await page.bringToFront(); await page.mouse.move(p.x, p.y);
-      if (action === "click") await page.mouse.click(p.x, p.y, { clickCount: input.double ? 2 : 1 });
+      const p = point(input, page.viewportSize()), scale = tab.inputScale ?? 1; await page.bringToFront(); await page.mouse.move(p.x * scale, p.y * scale);
+      if (action === "click") await page.mouse.click(p.x * scale, p.y * scale, { clickCount: input.double ? 2 : 1 });
       if (action === "wheel") {
         if (![input.dx, input.dy].every(v => Number.isFinite(v) && Math.abs(v) <= 2000)) throw failure("invalid_input", "滚动位置无效");
         await page.mouse.wheel(input.dx, input.dy);
@@ -1292,7 +1481,15 @@ export function createNativeBrowserService(options = {}) {
     }
   }, 10000);
   expiry.unref();
-  return { request, releaseInput, close: async () => { tailnet.close(); clearInterval(expiry); await close(); } };
+  return { request: async (...args) => {
+    activeRequests++;
+    try {
+      await Promise.all(stoppingCaptures.values());
+      for (const tab of tabs.values()) await restoreCaptureMetrics(tab);
+      return await request(...args);
+    }
+    finally { activeRequests--; }
+  }, releaseInput, close: async () => { tailnet.close(); clearInterval(expiry); await close(); } };
 }
 
 export async function* lines(input, limit = lineLimit) {

@@ -66,8 +66,10 @@ function Assert-ClaudeSignature($signature) {
     }
 }
 
-function Get-RegisteredClaude {
-    $packages = @(Get-AppxPackage -Name Claude | Where-Object PackageFamilyName -ceq $packageFamily)
+function Get-RegisteredClaude([string]$UserSID = '') {
+    $options=@{Name='Claude'}
+    if ($UserSID) { $options.User=$UserSID }
+    $packages = @(Get-AppxPackage @options | Where-Object PackageFamilyName -ceq $packageFamily)
     if ($packages.Count -eq 0) { return }
     if ($packages.Count -ne 1) { throw 'Multiple registrations found for the Claude package family.' }
     $pkg = $packages[0]
@@ -75,7 +77,9 @@ function Get-RegisteredClaude {
         $pkg.SignatureKind -notin 'Developer','Store','Enterprise' -or $pkg.Status -ne 'Ok') {
         throw 'The registered Claude package is unsigned, unhealthy or has an unexpected publisher.'
     }
-    $version = Assert-ClaudeManifest (Get-AppxPackageManifest -Package $pkg.PackageFullName)
+    $manifestOptions=@{Package=$pkg.PackageFullName}
+    if ($UserSID) { $manifestOptions.User=$UserSID }
+    $version = Assert-ClaudeManifest (Get-AppxPackageManifest @manifestOptions)
     return [pscustomobject]@{
         Registered = $true
         Version = $version.ToString()
@@ -99,6 +103,34 @@ function Get-VerifiedClaudeMsixVersion([IO.FileInfo]$file, [IO.Stream]$handle) {
             return (Assert-ClaudeManifest $manifest)
         } finally { $stream.Dispose() }
     } finally { $zip.Dispose() }
+}
+
+function Assert-ClaudeDesktopRelease([string]$Path, [string]$ExpectedVersion) {
+    $handle = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+    try {
+        $version = Get-VerifiedClaudeMsixVersion (Get-Item -LiteralPath $Path) $handle
+        if ($version -ne [version]($ExpectedVersion+'.0')) { throw 'The signed Claude Desktop package differs from the selected release.' }
+    } finally { $handle.Dispose() }
+}
+
+function Install-ProvisionedClaude([string]$Path, [string]$UserSID = '') {
+    $handle = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+    try {
+        $version = Get-VerifiedClaudeMsixVersion (Get-Item -LiteralPath $Path) $handle
+        if ($UserSID) {
+            $registered=Get-RegisteredClaude $UserSID
+            if ($registered -and [version]$registered.Version -ge $version) { return }
+        }
+        $installed = @(Get-AppxProvisionedPackage -Online | Where-Object DisplayName -ceq 'Claude')
+        if ($installed.Count -gt 1 -or ($installed.Count -eq 1 -and $installed[0].PackageName -notmatch '^Claude_[0-9.]+_x64__pzs8sxrjxfjjc$')) {
+            throw 'An unexpected existing Claude registration was preserved.'
+        }
+        if ($installed.Count -and [version]($installed[0].PackageName.Split('_')[1]) -ge $version) { return }
+        $null = Add-AppxProvisionedPackage -Online -PackagePath $Path -SkipLicense -Regions 'all'
+        $installed = @(Get-AppxProvisionedPackage -Online | Where-Object DisplayName -ceq 'Claude')
+        if ($installed.Count -ne 1 -or $installed[0].PackageName -notmatch '^Claude_[0-9.]+_x64__pzs8sxrjxfjjc$' -or
+            [version]($installed[0].PackageName.Split('_')[1]) -lt $version) { throw 'Windows did not provision the selected Claude Desktop version.' }
+    } finally { $handle.Dispose() }
 }
 
 function Install-ClaudeMsix([string]$path) {

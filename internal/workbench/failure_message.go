@@ -20,6 +20,8 @@ func executionFailure(action string, err error, output string) error {
 		patterns     []string
 		reason, next string
 	}{
+		{[]string{"base vm not found"}, "基础模板缺失，无法创建或重置环境", "请先完成环境安装；已有环境的磁盘应保留，不要删除或重置个人数据。"},
+		{[]string{"base vm setup did not complete"}, "基础模板尚未安装完成", "请继续环境安装后重试；已有环境的磁盘应保留，不要删除或重置个人数据。"},
 		{[]string{"cage_windows_maintenance_authorization_canceled"}, "已取消 Windows 管理员授权", "请重新发起原操作，并在 Windows 系统授权窗口中确认。"},
 		{[]string{"cage_windows_maintenance_authorization"}, "Windows 管理员授权窗口未能打开", "请从本机 Cage 重新发起操作，并使用可完成管理员授权的 Windows 账户。"},
 		{[]string{"cage_windows_maintenance_validation"}, "Windows 环境绑定或组件清单未通过校验", "请重新发起原操作，组件包仍无法核验时重新安装完整 Cage 应用。"},

@@ -121,6 +121,28 @@ func TestTerminalViewerDisconnectJoinsSenderAndKeepsPTY(t *testing.T) {
 	awaitTerminalSignal(t, finished)
 }
 
+func TestTerminalHistoryIsMarkedBeforeClipboardReplay(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(s.terminals.close)
+	history := []byte("\x1b]52;c;Y29weQ==\x07previous output")
+	s.terminals.sessions = map[string]*terminalSession{"history": {id: "history", history: history, closed: true}}
+	server := httptest.NewServer(s.handler())
+	defer server.Close()
+	s.origin = server.URL
+	ws := connectTerminalViewer(t, s, server, "history")
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var marker struct {
+		Type string `json:"type"`
+	}
+	if err := ws.ReadJSON(&marker); err != nil || marker.Type != "history" {
+		t.Fatalf("history marker: %+v, %v", marker, err)
+	}
+	kind, data, err := ws.ReadMessage()
+	if err != nil || kind != websocket.BinaryMessage || string(data) != string(history) {
+		t.Fatalf("history bytes changed: kind=%d data=%q err=%v", kind, data, err)
+	}
+}
+
 type blockedInputTerminal struct {
 	*controlledTerminal
 	inputStarted chan struct{}

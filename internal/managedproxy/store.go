@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sylvinus/agent-vm/internal/exitpolicy"
 	"github.com/sylvinus/agent-vm/internal/host"
 	"go.yaml.in/yaml/v3"
 )
@@ -42,13 +43,14 @@ type Source struct {
 	Skipped   []NodeIssue `json:"skipped,omitempty"`
 }
 type Store struct {
-	Version  int      `json:"version"`
-	Port     int      `json:"port"`
-	Auth     string   `json:"auth"`
-	Revision string   `json:"revision"`
-	Selected string   `json:"selected"`
-	Chain    []string `json:"chain,omitempty"`
-	Sources  []Source `json:"sources"`
+	Version      int                          `json:"version"`
+	Port         int                          `json:"port"`
+	Auth         string                       `json:"auth"`
+	Revision     string                       `json:"revision"`
+	Selected     string                       `json:"selected"`
+	Chain        []string                     `json:"chain,omitempty"`
+	Sources      []Source                     `json:"sources"`
+	ExitPolicies map[string]exitpolicy.Policy `json:"exit_policies,omitempty"`
 }
 
 func Token() string {

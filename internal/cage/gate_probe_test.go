@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -26,6 +27,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestExitProbeClassifiesProxyTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	var connections atomic.Int32
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			go func() { defer conn.Close(); _, _ = io.Copy(io.Discard, conn) }()
+		}
+	}()
+	cfg := DefaultConfig()
+	cfg.ProxyURL = "http://" + listener.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Second)
+	defer cancel()
+	ip, err := ProbeExitIP(ctx, cfg)
+	if ip != "" || !errors.Is(err, context.DeadlineExceeded) || connections.Load() != 2 {
+		t.Fatalf("two timed-out proxy probes = %q, %v, connections=%d", ip, err, connections.Load())
+	}
+}
 
 // The child uses a private test CA, so the real ProbeExitIP entry point verifies
 // TLS without changing production trust or replacing the HTTP transport.
@@ -112,6 +140,8 @@ func TestExitProbeUsesIPv4ServiceThroughProxy(t *testing.T) {
 			status           int
 		}{
 			{"public-ipv4", "8.8.8.8\n", "8.8.8.8", 200},
+			{"fallback-after-unavailable", "8.8.8.8\n", "8.8.8.8", 503},
+			{"fallback-after-invalid", "8.8.8.8\n", "8.8.8.8", 200},
 			{"whitespace", " \r\n1.1.1.1\r\n", "1.1.1.1", 200},
 			{"ipv6", "2606:4700:4700::1111\n", "", 200},
 			{"mapped-ipv4", "::ffff:8.8.8.8", "", 200},
@@ -131,12 +161,20 @@ func TestExitProbeUsesIPv4ServiceThroughProxy(t *testing.T) {
 				var requests atomic.Int32
 				upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 					requests.Add(1)
+					if (request.Host != "ipv4.icanhazip.com" && request.Host != "api.ipify.org") || request.URL.RequestURI() != "/" || request.Method != "GET" || request.Header.Get("User-Agent") != "Cage-network-check/1" || request.Header.Get("Cookie") != "" || request.Header.Get("Authorization") != "" || request.Header.Get("Proxy-Authorization") != "" {
+						t.Error("probe request changed destination or forwarded guest/proxy data")
+					}
 					if request.Host == "api.ipify.org" {
+						if strings.HasPrefix(tc.name, "fallback-") {
+							_, _ = io.WriteString(w, tc.body)
+							return
+						}
 						_, _ = io.WriteString(w, `{"ip":"2606:4700:4700::1111"}`)
 						return
 					}
-					if request.Host != "ipv4.icanhazip.com" || request.URL.RequestURI() != "/" || request.Method != "GET" || request.Header.Get("User-Agent") != "Cage-network-check/1" || request.Header.Get("Cookie") != "" || request.Header.Get("Authorization") != "" || request.Header.Get("Proxy-Authorization") != "" {
-						t.Error("probe request changed destination or forwarded guest/proxy data")
+					if tc.name == "fallback-after-invalid" {
+						_, _ = io.WriteString(w, "192.168.1.1")
+						return
 					}
 					w.Header().Set("Content-Type", "text/plain")
 					if tc.name == "redirect" {
@@ -157,8 +195,12 @@ func TestExitProbeUsesIPv4ServiceThroughProxy(t *testing.T) {
 				if output, err := command.CombinedOutput(); err != nil {
 					t.Fatalf("real probe entry failed: %v\n%s", err, output)
 				}
-				if connects.Load() != 2 || requests.Load() != 2 {
-					t.Fatalf("host and guest probes must each use the configured proxy once: connects=%d requests=%d", connects.Load(), requests.Load())
+				wantRequests := int32(2)
+				if tc.want == "" || strings.HasPrefix(tc.name, "fallback-") {
+					wantRequests = 4
+				}
+				if connects.Load() != wantRequests || requests.Load() != wantRequests {
+					t.Fatalf("host and guest probes must use only the configured proxy: connects=%d requests=%d", connects.Load(), requests.Load())
 				}
 			})
 		}
@@ -176,7 +218,7 @@ func TestExitProbeProxyRejectionDoesNotFallbackOrLeakResponse(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ProxyURL = proxy.URL
 	ip, err := ProbeExitIP(context.Background(), cfg)
-	if err == nil || ip != "" || requests.Load() != 1 || strings.Contains(err.Error(), "private-proxy-response") {
+	if err == nil || ip != "" || requests.Load() != 2 || strings.Contains(err.Error(), "private-proxy-response") {
 		t.Fatalf("proxy rejection escaped the configured route or leaked its response: IP=%q error=%v requests=%d", ip, err, requests.Load())
 	}
 }

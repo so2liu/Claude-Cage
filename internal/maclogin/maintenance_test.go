@@ -2,6 +2,7 @@ package maclogin
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -124,5 +125,20 @@ func TestMaintenancePasswordRejectsChangedPanelAndSecureFocus(t *testing.T) {
 	target.Accessibility, target.PasswordFocused = true, true
 	if _, allowed := selection.consumeMaintenance(window, target, "trial", now); !allowed {
 		t.Fatal("verified secure focus required an unnecessary manual selection")
+	}
+}
+
+func TestMaintenanceProbeDistinguishesBlockedWindow(t *testing.T) {
+	w := maintenanceWindow{Error: "maintenance_window_obscured", BlockingPID: 42, BlockingWindow: 7, BlockingBundle: "com.apple.notificationcenterui"}
+	if message := w.probeMessage(); !strings.Contains(message, "通知中心 PID 42 窗口 7") {
+		t.Fatal(message)
+	}
+	w.BlockingBundle = "unexpected\nwindow title"
+	if strings.Contains(w.probeMessage(), "unexpected") {
+		t.Fatal("invalid bundle identifier reported")
+	}
+	w.Error = "maintenance_window_unavailable"
+	if strings.Contains(w.probeMessage(), "遮挡") {
+		t.Fatal("a missing window was attributed to an obstruction")
 	}
 }

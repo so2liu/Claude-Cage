@@ -209,10 +209,17 @@ func TestDisplayPreferenceAppliesAtNextLaunch(t *testing.T) {
 	// Reconnecting before the next launch must still size the active 2x display.
 	w := request(s, "GET", "/api/vnc-credentials", "", "", true)
 	var active struct {
-		Scale float64 `json:"display_scale"`
+		Scale   float64 `json:"display_scale"`
+		Dynamic bool    `json:"dynamic_scale"`
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &active) != nil || active.Scale != 2 {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &active) != nil || active.Scale != 2 || active.Dynamic {
 		t.Fatal("reconnect lost the running display density")
+	}
+	// A guest with a settings manager lets each viewer choose its density.
+	s.credentials.DynamicScale = true
+	w = request(s, "GET", "/api/vnc-credentials", "", "", true)
+	if json.Unmarshal(w.Body.Bytes(), &active) != nil || !active.Dynamic {
+		t.Fatal("viewer was not told that the display follows its screen")
 	}
 	// A client that omits the new preference must preserve the user's choice.
 	settings := request(s, "GET", "/api/settings", "", "", true)

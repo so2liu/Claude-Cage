@@ -1,5 +1,6 @@
 import { getKeycode, getKeysym } from "../.generated/novnc/core/input/util.js";
 import { api, writeClipboard, nativeAvailable, native } from "./api";
+import { caretPollDelay, caretPollFast, caretFreshFor } from "./caret-poll.mjs";
 import {
   readClipboardContent,
   transferFiles,
@@ -31,6 +32,8 @@ export function installRemoteInput(
     compositionSequence = 0,
     caretState,
     caretTimer,
+    caretWait = caretPollFast,
+    lastAction = Date.now(),
     caretPending = false,
     nativeOwner = "",
     nativeTarget = "",
@@ -56,6 +59,7 @@ export function installRemoteInput(
     (nativeOwned || container.contains(document.activeElement) ||
       document.activeElement === target);
   const macGuest = () => ["darwin", "macos"].includes(guestPlatform());
+  const windowsGuest = () => ["windows", "windows-11"].includes(guestPlatform());
   const sharedClipboard = () => systemClipboard() && window.cageSharedClipboardActive;
   const shortcutModifier = () => {
     if (macGuest()) return physical.has("MetaRight") ? [0xffec, "MetaRight"] : [0xffeb, "MetaLeft"];
@@ -69,6 +73,11 @@ export function installRemoteInput(
   };
   const prepareCopy = () => {
     if (!isActive() || disposed) return;
+    // The shared clipboard delivers guest copies independently of RFB input.
+    if (sharedClipboard()) {
+      if (copyContext) cancelCopy();
+      return;
+    }
     copyContext = crypto.randomUUID().replaceAll("-", "");
     copyRevision = nativeAvailable() ? native("clipboardRevision").catch(() => undefined) : Promise.resolve(undefined);
     const context = copyContext;
@@ -101,7 +110,7 @@ export function installRemoteInput(
     target.style.left = `${Math.max(0, Math.min(x, window.innerWidth - 1))}px`;
     target.style.top = `${Math.max(0, Math.min(y, window.innerHeight - 24))}px`;
   };
-  const syncCaret = async () => {
+  const syncCaret = async (cursorOnly = false) => {
     if (!caretRect || caretPending || disposed || !isActive()) return;
     caretPending = true;
     const id = getTargetId();
@@ -109,6 +118,11 @@ export function installRemoteInput(
     try {
       const value = await caretRect(compositionSession);
       if (disposed || !isActive() || id !== getTargetId()) return;
+      if (["text", "pointer", "default"].includes(value?.cursor)) {
+        const canvas = surface?.() || container.querySelector("canvas");
+        canvas?.style?.setProperty("cursor", value.cursor, "important");
+      }
+      if (cursorOnly) return;
       caretState = value?.available ? { ...value, target: id, time: Date.now() } : null;
       if (!value?.available) { deactivateNative(); return; }
       if (!value.rect || value.rect[3] <= 0) return;
@@ -127,15 +141,49 @@ export function installRemoteInput(
   };
   const pollCaret = async () => {
     if (focused()) await syncCaret();
-    if (!disposed) caretTimer = setTimeout(pollCaret, 250);
+    if (disposed) return;
+    caretWait = caretPollDelay(Date.now() - lastAction);
+    caretTimer = setTimeout(pollCaret, caretWait);
   };
   if (caretRect) caretTimer = setTimeout(pollCaret, 0);
+  const acted = () => {
+    lastAction = Date.now();
+    // A slow wait scheduled while the viewer was quiet must not delay the
+    // readings that follow their input.
+    if (!caretRect || disposed || caretWait <= caretPollFast) return;
+    clearTimeout(caretTimer);
+    caretWait = caretPollFast;
+    caretTimer = setTimeout(pollCaret, caretWait);
+  };
   const bounds = container.getBoundingClientRect();
   position(bounds.left + 12, bounds.top + 12);
+  let lastHoverProbe = -Infinity;
+  let hoverTimer;
+  let hovered = false;
+  const probeHover = () => {
+    if (!windowsGuest() || !hovered || !isActive() || disposed || document.visibilityState === "hidden" ||
+        (!document.hasFocus() && !nativeOwned)) return;
+    if (caretPending) { hoverTimer = setTimeout(probeHover, caretPollFast); return; }
+    lastHoverProbe = Date.now();
+    void syncCaret(true);
+  };
+  listeners.push(() => clearTimeout(hoverTimer));
+  on(container, "pointerleave", () => { hovered = false; clearTimeout(hoverTimer); });
+  on(container, "pointermove", () => {
+    if (!windowsGuest() || !isActive() || disposed || document.visibilityState === "hidden" ||
+        (!document.hasFocus() && !nativeOwned)) return;
+    acted();
+    hovered = true;
+    clearTimeout(hoverTimer);
+    // Hover may follow a toolbar click. Update shape without acquiring IME
+    // ownership or moving focus into the remote application.
+    hoverTimer = setTimeout(probeHover, Math.max(0, caretPollFast - (Date.now() - lastHoverProbe)));
+  });
   on(
     container,
     "pointerdown",
     (event) => {
+      acted();
       // Cancel before noVNC queues a click into another remote field.
       if (composing) {
         if (compositionSession) queueComposition({ mode: "cancel" });
@@ -175,10 +223,11 @@ export function installRemoteInput(
     target.value = "";
   };
   const startComposition = () => {
+    acted();
     composing = true;
     compositionTarget = getTargetId();
     if (insertComposition && caretState?.context && caretState.target === compositionTarget &&
-        Date.now() - caretState.time < 1000) {
+        Date.now() - caretState.time < caretFreshFor) {
       compositionSession = crypto.randomUUID().replaceAll("-", "");
       compositionSequence = 0;
       queueComposition({ mode: "begin", context: caretState.context });
@@ -263,8 +312,11 @@ export function installRemoteInput(
     }
   });
   on(container, "pointerup", () => {
+    acted();
     setTimeout(() => void syncCaret(), 50);
   });
+  // Scrolling moves the caret without moving focus.
+  on(container, "wheel", acted, { capture: true, passive: true });
   const say = (text) => {
     if (!disposed) onStatus(text);
   };
@@ -435,6 +487,7 @@ export function installRemoteInput(
     "keydown",
     (event) => {
       if (!focused()) return;
+      acted();
       if ((event.isTrusted || event.cageNativeInput) && (!copyContext || ["Enter", " ", "Tab"].includes(event.key) ||
           event.ctrlKey || event.metaKey || event.altKey)) prepareCopy();
       if (

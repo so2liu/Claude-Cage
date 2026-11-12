@@ -93,6 +93,8 @@ type Settings struct {
 
 	// noEphemeralPorts: see ephemeralPorts.
 	noEphemeralPorts bool
+	// Refresh the cloud-init timezone on cold starts of an existing virtual Mac.
+	macOSTimezone string
 }
 
 // ephemeralPorts is the guest kernel's range for the ports a program gets

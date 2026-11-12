@@ -113,6 +113,9 @@ func (p Policy) Evaluate(ip string, location *Location) (State, string) {
 		return state, message
 	}
 	if p.NeedsBinding() {
+		if p.Mode == "dynamic" && p.CountryCode == "" {
+			return Unknown, "动态 IP 的允许国家或地区尚未绑定，外网保持关闭。请在网络与代理设置中确认出口地区"
+		}
 		return Unknown, "尚未绑定出口规则，请在设置中确认检测到的 IP 或地区"
 	}
 	if p.Mode == "static" {

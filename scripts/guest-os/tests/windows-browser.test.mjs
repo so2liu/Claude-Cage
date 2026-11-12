@@ -5,11 +5,11 @@ import net from "node:net";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { applyWindowsEditorHTMLDefault, checkedBrowserURL, checkedLoopbackProxy, createWindowsBrowserService, validWindowsBrowserFileName } from "../windows-browser.mjs";
+const { applyWindowsEditorHTMLDefault, checkedBrowserURL, checkedLoopbackProxy, createWindowsBrowserService, validWindowsBrowserFileName } = await import(process.env.CAGE_BROWSER_TEST_CONTROLLER ? pathToFileURL(process.env.CAGE_BROWSER_TEST_CONTROLLER) : new URL("../windows-browser.mjs", import.meta.url));
 import { fixtureZip } from "./windows-browser-fixtures.mjs";
 import { serveMacOSBrowser } from "../macos-browser-service.mjs";
 const moduleURL = file => process.env.CAGE_BROWSER_TEST_MODULE_DIRECTORY ? pathToFileURL(path.join(process.env.CAGE_BROWSER_TEST_MODULE_DIRECTORY, file)) : new URL("../../../internal/cage/" + file, import.meta.url);
@@ -45,7 +45,7 @@ test("Cage editor changes only its fixed low-priority trust default in the offic
 const playwrightPath = process.env.CAGE_BROWSER_TEST_PLAYWRIGHT;
 const executablePath = process.env.CAGE_BROWSER_TEST_CHROMIUM;
 const integration = playwrightPath && executablePath ? test : test.skip;
-async function fixture(t, configured = {}) {
+async function fixture(t, configured = {}, overrides = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "cage-windows-browser-"));
   const payload = Buffer.alloc((128 << 10) + 37);
   for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
@@ -74,6 +74,7 @@ async function fixture(t, configured = {}) {
     modules: { BrowserClipboard, UploadManager, DownloadManager, browserCookies, BrowserVault, ...(process.env.CAGE_BROWSER_TEST_EXTENSIONS === "1" ? { BrowserExtensions } : {}) }, displayScale: 2,
     splitDirectory: process.env.CAGE_BROWSER_TEST_SPLIT_DIRECTORY,
     editor: async workspace => ({ url: `http://${workspace.slice(0, 16)}.cage-editor.localhost:${server.address().port}/editor-` + workspace }),
+    ...overrides,
   };
   let service = createWindowsBrowserService(options);
   const settings = { proxy: configured.diagnostic ? url : "http://127.0.0.1:18501", ...configured };
@@ -97,6 +98,52 @@ async function fixture(t, configured = {}) {
     return call("tabs", {}, "GET");
   } };
 }
+
+integration("interactive browser identity is native in normal and private documents", async t => {
+  const f = await fixture(t);
+  for (const incognito of [false, true]) {
+    const { page } = await f.open("/identity", incognito);
+    assert.deepEqual(await page.evaluate(() => ({
+      automated: navigator.webdriver,
+      getter: Object.getOwnPropertyDescriptor(Navigator.prototype, "webdriver").get.toString(),
+    })), { automated: false, getter: "function get webdriver() { [native code] }" });
+  }
+  assert.ok(f.launchOptions().ignoreDefaultArgs.includes("--enable-automation"));
+  assert.equal(f.launchOptions().chromiumSandbox, true);
+});
+
+integration("closed browser tabs release their controller sessions", async t => {
+  const f = await fixture(t);
+  const original = (await f.call("health", {}, "GET")).resources;
+  for (let index = 0; index < 12; index++) {
+    const { id, page } = await f.open("/lifecycle-" + index);
+    await f.call("close", { id });
+    assert.equal(page.isClosed(), true);
+    assert.deepEqual((await f.call("health", {}, "GET")).resources, original, "closed tabs must release their sessions");
+  }
+});
+
+integration("removed browser frames release clipboard and controller sessions", async t => {
+  const f = await fixture(t);
+  const { id, page } = await f.open("/frame-lifecycle");
+  const original = (await f.call("health", {}, "GET")).resources;
+  for (let index = 0; index < 5; index++) {
+    await page.evaluate(async url => {
+      const frame = document.createElement("iframe");
+      frame.src = url;
+      const loaded = new Promise(resolve => { frame.onload = resolve; });
+      document.body.append(frame);
+      await loaded;
+    }, f.url.replace("127.0.0.1", "localhost") + "/child-" + index);
+    await page.waitForTimeout(100);
+    const attached = (await f.call("health", {}, "GET")).resources;
+    assert.ok(attached.sessions > original.sessions);
+    await page.evaluate(() => document.querySelector("iframe").remove());
+    await page.waitForTimeout(100);
+    assert.deepEqual((await f.call("health", {}, "GET")).resources, original, "detached frames must release clipboard state");
+    await f.call("copy-context", { id, context: "a".repeat(32) });
+  }
+});
 
 integration("actual Chromium tabs restore and project switching retains unsaved editor buffers", async t => {
   const f = await fixture(t);
@@ -291,9 +338,15 @@ integration("physical frame geometry, RFB key/pointer and composition reject lat
   assert.equal(await one.page.locator("#first").inputValue(), "ab");
   const status = await f.call("ime", { id: one.id, target: "browser", mode: "status" }); assert(status.available); assert(status.rect[3] > 0);
   const session = "d".repeat(32), common = { id: one.id, target: "browser", session };
-  await f.call("ime", { ...common, mode: "begin", sequence: 0, context: status.context });
-  await f.call("ime", { ...common, mode: "update", sequence: 1, text: "nihao", selectionStart: 5, selectionEnd: 5 });
-  await f.call("ime", { ...common, mode: "commit", sequence: 2, text: "你好🙂" });
+  for (const value of [
+    { mode: "begin", sequence: 0, context: status.context },
+    { mode: "update", sequence: 1, text: "nihao", selectionStart: 5, selectionEnd: 5 },
+    { mode: "commit", sequence: 2, text: "你好🙂" },
+  ]) {
+    const reply = await f.call("ime", { ...common, ...value });
+    assert.equal(reply.available, true, "the viewer requires an explicit focused-input receipt");
+    assert.equal(reply.context, status.context);
+  }
   assert.equal(await one.page.locator("#first").inputValue(), "ab你好🙂");
   const next = await f.call("ime", { id: one.id, target: "browser", mode: "status" });
   await f.call("ime", { ...common, mode: "begin", sequence: 3, context: next.context });
@@ -332,8 +385,15 @@ integration("split panes resize actual pages and route physical input to the cli
 });
 
 integration("screencast retains HiDPI pixels, skips static frames and resumes after its viewer leaves", async t => {
-  const f = await fixture(t), one = await f.open("/still");
+  const f = await fixture(t, {}, { continuousFrames: false }), one = await f.open("/still");
   await one.page.evaluate(() => { document.body.style.background = "rgb(245, 240, 230)"; });
+  const screenshot = one.page.screenshot.bind(one.page);
+  one.page.screenshot = async options => {
+    // A slow Windows capture can take longer than the idle viewer timeout.
+    one.page.screenshot = screenshot;
+    await new Promise(resolve => setTimeout(resolve, 1700));
+    return screenshot(options);
+  };
   let frame = await f.call("frame", {}, "GET");
   const dimensions = await one.page.evaluate(async jpeg => {
     const image = new Image(); image.src = "data:image/jpeg;base64," + jpeg; await image.decode();
@@ -371,6 +431,106 @@ integration("screencast retains HiDPI pixels, skips static frames and resumes af
   await new Promise(resolve => setTimeout(resolve, 1700));
   const resumed = await f.call("frame", { after: updated.sequence }, "GET");
   assert(resumed.jpeg && resumed.sequence !== updated.sequence);
+});
+
+integration("a scrolled browser viewport stays visible while a web font is loading", async t => {
+  const f = await fixture(t, { displayScale: 1.5 });
+  const { page } = await f.open();
+  const initial = await f.call("frame", {}, "GET");
+  let releaseFont;
+  const pending = new Promise(resolve => { releaseFont = resolve; });
+  await page.route("**/pending-font.woff2", async route => { await pending; await route.abort(); });
+  const requested = page.waitForRequest("**/pending-font.woff2");
+  await page.evaluate(() => {
+    document.body.innerHTML = '<main style="height:90vh;overflow:auto"><div style="height:200vh;background:red"></div><div style="height:120vh;background:lime">waiting</div></main>';
+    const font = new FontFace("pending", "url(/pending-font.woff2)");
+    document.fonts.add(font);
+    document.body.style.fontFamily = "pending, sans-serif";
+    const pane = document.querySelector("main");
+    pane.scrollTop = pane.scrollHeight;
+  });
+  await requested;
+  const timer = setTimeout(releaseFont, 4000);
+  try {
+    let after = initial.sequence;
+    for (;;) {
+      const frame = await f.call("frame", { after }, "GET");
+      assert.equal(await page.evaluate(() => document.fonts.status), "loading", "scrolled frame must arrive before font loading ends");
+      if (!frame.unchanged) {
+        const pixel = await page.evaluate(async ({ jpeg, width, height }) => {
+          const image = new Image(); image.src = "data:image/jpeg;base64," + jpeg; await image.decode();
+          const ctx = document.createElement("canvas").getContext("2d");
+          ctx.drawImage(image, width / 2, height / 2, 1, 1, 0, 0, 1, 1);
+          return { rgb: [...ctx.getImageData(0, 0, 1, 1).data], size: [image.width, image.height] };
+        }, frame);
+        assert.deepEqual(pixel.size, [frame.width, frame.height]);
+        assert.equal(frame.scale, 1.5);
+        if (pixel.rgb[1] > 245 && pixel.rgb[0] < 10 && pixel.rgb[2] < 10) break;
+        after = frame.sequence;
+      }
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  } finally { clearTimeout(timer); releaseFont(); }
+});
+
+integration("pixel wheel preserves distance and still rejects stale targets and invalid bounds", async t => {
+  const f = await fixture(t), { page } = await f.open();
+  await page.evaluate(() => { document.body.style.height = "6000px"; document.documentElement.style.scrollBehavior = "auto"; });
+  const frame = await f.call("frame", {}, "GET");
+  const wheel = { kind: "pointer", target: frame.target, x: 600, y: 600, mask: 16, deltaX: 0, deltaY: 720 };
+  await f.call("input", wheel);
+  await page.waitForFunction(() => scrollY >= 700);
+  assert.equal(await page.evaluate(() => scrollY), 720);
+  await f.call("input", { ...wheel, mask: 8, deltaY: -360 });
+  await page.waitForFunction(() => scrollY === 360);
+  await assert.rejects(f.call("input", { ...wheel, target: "stale" }), /target changed/);
+  await assert.rejects(f.call("input", { ...wheel, deltaY: 2049 }), /滚动距离/);
+  await assert.rejects(f.call("input", { ...wheel, mask: 17 }), /滚动距离/);
+  assert.equal(await page.evaluate(() => scrollY), 360);
+});
+
+integration("continuous HiDPI frames preserve pixels, click coordinates and resize without screenshot polling", async t => {
+  const f = await fixture(t, {}, { continuousFrames: true }), { id, page } = await f.open();
+  await page.evaluate(() => {
+    document.body.innerHTML = '<style>body{margin:0}section{height:240px;border-bottom:1px solid #aaa}button{margin:24px;width:200px;height:40px}</style>' +
+      Array.from({ length: 40 }, (_, i) => `<section style="background:${i % 2 ? '#cef' : '#fed'}"><button onclick="this.textContent='clicked'">Marker ${i}</button></section>`).join('');
+    scrollTo(0, 1100);
+  });
+  const reference = (await page.screenshot({ type: 'jpeg', quality: 85, caret: 'initial' })).toString('base64');
+  let frame = await f.call('frame', {}, 'GET');
+  // The first compositor event may already be in flight during the surface
+  // resize. Compare the settled image, rather than that transition frame.
+  await new Promise(resolve => setTimeout(resolve, 100));
+  frame = await f.call('frame', {}, 'GET');
+  if (process.env.CAGE_CAPTURE_DIAG_DIR) {
+    await writeFile(path.join(process.env.CAGE_CAPTURE_DIAG_DIR, 'stream-test.jpg'), Buffer.from(frame.jpeg, 'base64'));
+    await writeFile(path.join(process.env.CAGE_CAPTURE_DIAG_DIR, 'reference-test.jpg'), Buffer.from(reference, 'base64'));
+  }
+  const comparison = await page.evaluate(async ({ actual, reference }) => {
+    const images = await Promise.all([actual, reference].map(async jpeg => { const image = new Image(); image.src = 'data:image/jpeg;base64,' + jpeg; await image.decode(); return image; }));
+    const pixels = images.map(image => { const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height; const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0); return ctx.getImageData(0, 0, canvas.width, canvas.height).data; });
+    let total = 0; for (let i = 0; i < pixels[0].length; i += 4) for (let j = 0; j < 3; j++) total += Math.abs(pixels[0][i+j] - pixels[1][i+j]);
+    return { sizes: images.map(i => [i.width, i.height]), error: total / (pixels[0].length / 4 * 3), dpr: devicePixelRatio, scroll: scrollY };
+  }, { actual: frame.jpeg, reference });
+  assert.deepEqual(comparison.sizes, [[2280, 1400], [2280, 1400]]);
+  assert.equal(comparison.dpr, 2); assert.equal(comparison.scroll, 1100);
+  assert(comparison.error < 3, JSON.stringify(comparison));
+  const button = await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => b.getBoundingClientRect().y > 30); const r = b.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; });
+  for (const mask of [1, 0]) await f.call('input', { kind: 'pointer', target: frame.target, x: button.x*2, y: button.y*2, mask });
+  assert.equal(await page.evaluate(() => !![...document.querySelectorAll('button')].find(b => b.textContent === 'clicked')), true);
+  await f.call('resize', { width: 2000, height: 1300 });
+  await assert.rejects(f.call('input', { kind: 'pointer', target: frame.target, x: 100, y: 100, mask: 1 }), /target changed/);
+  frame = await f.call('frame', {}, 'GET');
+  assert.equal(frame.width, 2000); assert.equal(frame.height, 1300);
+  await f.call('input', { kind: 'pointer', target: frame.target, x: 300, y: 400, mask: 16, deltaX: 0, deltaY: 120 });
+  await page.waitForFunction(() => scrollY === 1220);
+  const stats = (await f.call('health', {}, 'GET')).capture;
+  assert.equal(stats.screenshots, 0); assert(stats.streamed_frames > 0);
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  const resumed = await f.call('frame', {}, 'GET');
+  assert.equal(resumed.width, 2000);
+  assert.equal((await f.call('health', {}, 'GET')).capture.screenshots, 0);
+  t.diagnostic(JSON.stringify({ imageMeanError: comparison.error, screenshots: stats.screenshots, streamedFrames: stats.streamed_frames }));
 });
 
 integration("audit reads configured browser state separately from expected values and preserves actual HTTP failures", async t => {
@@ -641,6 +801,173 @@ nativeUI("headed Chrome exposes owned window proof and CDP shortcuts alone do no
   assert.equal(after.native.window.windowId, before.native.window.windowId);
   assert.equal(after.native.document, before.native.document);
   assert.equal(after.native.id, one.id);
+});
+
+function interceptCapture(context, mutate) {
+  const create = context.newCDPSession.bind(context);
+  context.newCDPSession = async (...args) => {
+    const session = await create(...args), on = session.on.bind(session), off = session.off.bind(session);
+    const listeners = new Map();
+    session.on = (event, callback) => {
+      if (event !== "Page.screencastFrame") return on(event, callback);
+      const wrapped = frame => callback(mutate(frame));
+      listeners.set(callback, wrapped);
+      return on(event, wrapped);
+    };
+    session.off = (event, callback) => off(event, listeners.get(callback) || callback);
+    return session;
+  };
+}
+
+integration("slow viewers bound compositor encoding during continuous animation", async t => {
+  const f = await fixture(t, {}, { continuousFrames: true }), { page } = await f.open();
+  await f.call("resize", { width: 800, height: 600 });
+  await page.evaluate(() => {
+    let n = 0;
+    window.animation = setInterval(() => document.body.style.backgroundColor = "hsl(" + (n++ * 19 % 360) + " 80% 50%)", 16);
+  });
+  await f.call("frame", {}, "GET");
+  const start = performance.now(), before = (await f.call("health", {}, "GET")).capture;
+  for (let i = 0; i < 8; i++) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await f.call("frame", {}, "GET");
+  }
+  const after = (await f.call("health", {}, "GET")).capture;
+  const frames = after.damage_frames - before.damage_frames;
+  assert(frames <= 20, "encoding must follow the eight viewer requests, not the 60 Hz animation: " + frames);
+  assert.equal(after.fallbacks, 0);
+  t.diagnostic(JSON.stringify({ viewerRequests: 8, elapsedMs: Math.round(performance.now()-start), encodedFrames: frames, encodedBytes: after.encoded_bytes - before.encoded_bytes }));
+});
+
+integration("mismatched compositor frames fall back and restore input on resize and reconnect", async t => {
+  const f = await fixture(t, {}, { continuousFrames: true }), { id, page } = await f.open();
+  let corrupt = false;
+  interceptCapture(f.context(), frame => corrupt ? { ...frame, data: Buffer.from("bad jpeg").toString("base64") } : frame);
+  await f.call("frame", {}, "GET");
+  corrupt = true;
+  await page.evaluate(() => document.body.style.background = "red");
+  await new Promise(resolve => setTimeout(resolve, 120));
+  let frame = await f.call("frame", {}, "GET");
+  let stats = (await f.call("health", {}, "GET")).capture;
+  assert.equal(stats.fallbacks, 1);
+  assert(stats.invalid_frames > 0);
+  assert(stats.screenshots > 0);
+  await f.click(id, page, "#first");
+  await page.keyboard.insertText("restored");
+  assert.equal(await page.locator("#first").inputValue(), "restored");
+  await f.call("resize", { width: 1800, height: 1000 });
+  frame = await f.call("frame", {}, "GET");
+  assert.equal(frame.width, 1800); assert.equal(frame.height, 1000);
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  frame = await f.call("frame", {}, "GET");
+  assert.equal(frame.width, 1800);
+  await f.click(id, page, "#second");
+  await page.keyboard.insertText("reconnected");
+  assert.equal(await page.locator("#second").inputValue(), "reconnected");
+});
+
+integration("stopping continuous capture restores ordinary input before the next viewer", async t => {
+  const f = await fixture(t, {}, { continuousFrames: true }), { id, page } = await f.open();
+  await f.call("frame", {}, "GET");
+  await new Promise(resolve => setTimeout(resolve, 1800));
+  assert.equal((await f.call("health", {}, "GET")).resources.captures, 0);
+  await f.click(id, page, "#second");
+  await page.keyboard.insertText("after expiry");
+  assert.equal(await page.locator("#second").inputValue(), "after expiry");
+  await f.call("frame", {}, "GET");
+  await f.click(id, page, "#first");
+  await page.keyboard.insertText("after reconnect");
+  assert.equal(await page.locator("#first").inputValue(), "after reconnect");
+});
+
+integration("default HiDPI capture retains the unscaled screenshot path", async t => {
+  for (const continuousFrames of [undefined, false]) {
+    const f = await fixture(t, {}, { continuousFrames }), { page } = await f.open();
+    await f.call("frame", {}, "GET");
+    const stats = (await f.call("health", {}, "GET")).capture;
+    assert.equal(stats.streamed_frames, 0);
+    assert(stats.screenshots > 0);
+    assert.equal(await page.evaluate(() => devicePixelRatio), 2);
+  }
+});
+
+integration("default one-to-one frames stream without screenshot polling", async t => {
+  const f = await fixture(t, {}, { displayScale: 1 }), { id, page } = await f.open();
+  const frame = await f.call("frame", {}, "GET");
+  assert.equal(frame.width, 1140); assert.equal(frame.height, 700);
+  const stats = (await f.call("health", {}, "GET")).capture;
+  assert.equal(stats.screenshots, 0); assert(stats.streamed_frames > 0);
+  await f.click(id, page, "#first");
+  await page.keyboard.insertText("native pixels");
+  assert.equal(await page.locator("#first").inputValue(), "native pixels");
+});
+
+
+integration("startup invalid frames have a bounded recovery window", async t => {
+  for (const persistent of [false, true]) {
+    const f = await fixture(t, {}, { continuousFrames: true }), { page } = await f.open();
+    let count = 0;
+    interceptCapture(f.context(), frame => (++count <= 2 || persistent) ?
+      { ...frame, data: Buffer.from("bad jpeg").toString("base64") } : frame);
+    await page.evaluate(() => {
+      let n = 0;
+      window.animation = setInterval(() => document.body.style.backgroundColor = "hsl(" + (n++ * 19 % 360) + " 80% 50%)", 16);
+    });
+    const frame = await f.call("frame", {}, "GET");
+    assert(frame.width > 0);
+    const stats = (await f.call("health", {}, "GET")).capture;
+    assert.equal(stats.fallbacks, persistent ? 1 : 0);
+    assert.equal(stats.invalid_frames, persistent ? 3 : 2);
+    assert(persistent ? stats.screenshots > 0 : stats.streamed_frames > 0);
+  }
+});
+
+integration("startup stale sizes recover beyond two frames and remain bounded", async t => {
+  for (const persistent of [false, true]) {
+    const f = await fixture(t, {}, { continuousFrames: true }), { page } = await f.open();
+    const old = (await page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
+    await f.call("resize", { width: 800, height: 600 });
+    let count = 0;
+    interceptCapture(f.context(), frame => (++count <= 4 || persistent) ? { ...frame, data: old } : frame);
+    await page.evaluate(() => {
+      let n = 0;
+      window.animation = setInterval(() => document.body.style.backgroundColor = "hsl(" + (n++ * 19 % 360) + " 80% 50%)", 16);
+    });
+    const started = performance.now();
+    const frame = await f.call("frame", {}, "GET");
+    assert.equal(frame.width, 800); assert.equal(frame.height, 600);
+    const stats = (await f.call("health", {}, "GET")).capture;
+    assert.equal(stats.fallbacks, persistent ? 1 : 0);
+    assert(stats.invalid_frames >= 4 && stats.invalid_frames <= 17);
+    assert(performance.now() - started < 5000, "startup size recovery must finish before the frame deadline");
+    assert(persistent ? stats.screenshots > 0 : stats.streamed_frames > 0);
+  }
+});
+
+integration("a late native resize during startup retains the last valid image", { timeout: 10000 }, async t => {
+  const f = await fixture(t, {}, { continuousFrames: true }), { page } = await f.open();
+  const old = (await page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
+  await f.call("resize", { width: 800, height: 600 });
+  let valid = false, stale = 0, signal;
+  const observed = new Promise(resolve => { signal = resolve; });
+  interceptCapture(f.context(), frame => {
+    if (!valid) return frame;
+    if (stale++ < 2) { if (stale === 2) signal(); return { ...frame, data: old }; }
+    return frame;
+  });
+  await page.evaluate(() => {
+    let n = 0;
+    window.animation = setInterval(() => document.body.style.backgroundColor = "hsl(" + (n++ * 19 % 360) + " 80% 50%)", 16);
+  });
+  await f.call("frame", {}, "GET");
+  valid = true;
+  await observed;
+  const frame = await f.call("frame", {}, "GET");
+  assert.equal(frame.width, 800); assert.equal(frame.height, 600);
+  const stats = (await f.call("health", {}, "GET")).capture;
+  assert(stats.invalid_frames >= 2);
+  assert.equal(stats.fallbacks, 0);
+  assert.equal(stats.screenshots, 0);
 });
 
 test("JPEG dimensions identify clipped Mac compositor surfaces without trusting requested size", async () => {

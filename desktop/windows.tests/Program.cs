@@ -29,6 +29,10 @@ if (args is ["prepare-update", "--json", "--stop"])
     return;
 }
 
+#if WINDOWS
+NativeInputTests.Run();
+#endif
+
 var assertions = 0;
 void Check(bool condition, string message) { assertions++; if (!condition) throw new Exception(message); }
 void Reject(Action action, string message)

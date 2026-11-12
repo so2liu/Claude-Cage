@@ -41,7 +41,8 @@ async function getPage() {
       headless: true,
       chromiumSandbox: true,
       viewport: { width: 1140, height: 700 },
-      args: ["--disable-quic", "--no-default-browser-check"],
+      args: ["--disable-blink-features=AutomationControlled", "--disable-quic", "--no-default-browser-check"],
+      ignoreDefaultArgs: ["--enable-automation"],
       acceptDownloads: false,
       timeout: 20000,
     });

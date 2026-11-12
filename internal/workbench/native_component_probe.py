@@ -54,6 +54,7 @@ def snapshot(receipt=Path('/var/db/cage-components.json')):
         'claude': ['/usr/local/libexec/cage-cli/bin/claude', '--version'],
         'python': ['/usr/local/libexec/cage-cli/bin/python3', '--version'],
         'git': ['/usr/local/libexec/cage-cli/bin/git', '--version'],
+        'gh': ['/usr/local/libexec/cage-cli/bin/gh', '--version'],
         'node': ['/usr/local/libexec/cage-node-v24.22.2/bin/node', '--version'],
     }
     for name, command in commands.items():

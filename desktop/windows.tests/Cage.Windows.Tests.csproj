@@ -4,6 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <WindowsNativeInputTests Condition="'$(WindowsNativeInputTests)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">true</WindowsNativeInputTests>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(WindowsNativeInputTests)' == 'true'">
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../packaging/windows/installation-files.ps1" LogicalName="Cage.InstallationFiles.ps1" />
@@ -15,5 +20,11 @@
     <Compile Include="../windows/UpdateInstaller.cs" Link="UpdateInstaller.cs" />
     <Compile Include="../windows/Authenticode.cs" Link="Authenticode.cs" />
     <Compile Include="../windows/WindowLayout.cs" Link="WindowLayout.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(WindowsNativeInputTests)' == 'true'">
+    <Compile Include="../windows/NativeInput.cs" Link="NativeInput.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(WindowsNativeInputTests)' != 'true'">
+    <Compile Remove="NativeInputTests.cs" />
   </ItemGroup>
 </Project>

@@ -15,6 +15,45 @@ import (
 	"github.com/sylvinus/agent-vm/internal/guestos"
 )
 
+func TestExitProbeTimeoutKeepsExistingLeaseWithoutRenewing(t *testing.T) {
+	s, gate := grantedToolUpdateServer(t)
+	s.setJobForTest(Job{})
+	s.safety.VerifiedAt = time.Now().Add(-time.Minute)
+	before := gate.Status()
+	verified := s.safety.VerifiedAt
+	for i := 0; i < 2; i++ {
+		s.monitorSafetyWithProbe(func(context.Context, cage.Config) (string, error) {
+			return "", context.DeadlineExceeded
+		})
+		after := gate.Status()
+		if after.Mode != cage.GateOpen || after.Until != before.Until || !s.safety.VerifiedAt.Equal(verified) {
+			t.Fatalf("timeout changed the existing lease: before=%+v after=%+v", before, after)
+		}
+	}
+	client, err := s.gateClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows can grant and renew within the same wall-clock tick.
+	// Advance past the grant tick before requiring a later deadline.
+	for !time.Now().Add(cage.GateLease).After(before.Until) {
+		time.Sleep(time.Millisecond)
+	}
+	s.finishSafetyMonitor(context.Background(), client, gate.Status(), "8.8.8.8", "")
+	if !gate.Status().Until.After(before.Until) || s.safety.monitorError != "" {
+		t.Fatalf("successful observation did not renew and clear the retry notice: before=%+v after=%+v monitorError=%q", before, gate.Status(), s.safety.monitorError)
+	}
+	s.safety.VerifiedAt = time.Now().Add(-time.Minute)
+	gate.Close("检查或监测授权已到期")
+	s.monitorSafetyWithProbe(func(context.Context, cage.Config) (string, error) {
+		t.Fatal("expired gate must not probe or reopen")
+		return "", nil
+	})
+	if gate.Status().Mode != cage.GateClosed || s.recovery.RunID == "" {
+		t.Fatal("expired lease did not remain closed and schedule recovery")
+	}
+}
+
 func TestWindowsFastPacketReconnectSchedulesFreshCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name, reason          string

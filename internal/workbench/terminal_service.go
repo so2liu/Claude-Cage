@@ -64,6 +64,9 @@ func (m *terminalManager) startSessionWithPTY(cmd *exec.Cmd, workspace, kind str
 	session := newTerminalSession(file)
 	session.id, session.title, session.workspace, session.cmd = randomToken()[:16], title, workspace, cmd
 	session.kind, session.claudeAccountID = kind, selection.ID
+	if kind == "claude-login" {
+		session.loginGuestID = selection.GuestID
+	}
 	if selection.GuestID == "default" {
 		session.claudeAccountSource = "default"
 	} else if selection.ID != "" {

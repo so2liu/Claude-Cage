@@ -12,7 +12,10 @@ export async function playwrightPhonePipe(chromium, binary, args) {
   const directory = args.find(arg => arg.startsWith(prefix))?.slice(prefix.length);
   if (!directory || !path.isAbsolute(directory)) throw new Error("手机资料目录无效");
   const filtered = args.filter(arg => !arg.startsWith(prefix) && !["--remote-debugging-pipe", "--headless=new", "about:blank"].includes(arg));
-  const context = await chromium.launchPersistentContext(directory, { executablePath: binary, headless: true, chromiumSandbox: true, args: filtered });
+  const context = await chromium.launchPersistentContext(directory, {
+    executablePath: binary, headless: true, chromiumSandbox: true,
+    args: filtered, ignoreDefaultArgs: ["--enable-automation"],
+  });
   let connection;
   try { connection = await context.browser().newBrowserCDPSession(); }
   catch (error) { await context.close(); throw error; }

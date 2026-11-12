@@ -16,6 +16,7 @@ import { setCapture } from './util/events.js';
 import EventTargetMixin from './util/eventtarget.js';
 import Display from "./display.js";
 import CageBrowserDisplay from "./cage-browser-display.js";
+import CageWheel, { cageWheelCapability, cageWheelEncoding, cageWheelPacket } from "./cage-wheel.js";
 import Inflator from "./inflator.js";
 import Deflator from "./deflator.js";
 import Keyboard from "./input/keyboard.js";
@@ -195,6 +196,10 @@ export default class RFB extends EventTargetMixin {
         this._viewportHasMoved = false;
         this._accumulatedWheelDeltaX = 0;
         this._accumulatedWheelDeltaY = 0;
+        // Offered to Cage's own display server, which confirms it in a fence.
+        this._cageBrowserDisplay = !!options.cageBrowserDisplay;
+        this._cagePixelWheel = false;
+        this._cageWheel = new CageWheel((x, y, dx, dy) => this._cageSendWheel(x, y, dx, dy));
 
         // Gesture state
         this._gestureLastTapTime = null;
@@ -233,7 +238,7 @@ export default class RFB extends EventTargetMixin {
         this._screen.appendChild(this._canvas);
 
         // Cursor
-        this._cursor = new Cursor();
+        this._cursor = new Cursor(options.cageBrowserDisplay || options.cageCursorFallback ? 'default' : 'none');
 
         // XXX: TightVNC 2.8.11 sends no cursor at all until Windows changes
         // it. Result: no cursor at all until a window border or an edit field
@@ -641,6 +646,7 @@ export default class RFB extends EventTargetMixin {
         }
         clearTimeout(this._resizeTimeout);
         clearTimeout(this._mouseMoveTimer);
+        this._cageWheel.stop();
         Log.Debug("<< RFB.disconnect");
     }
 
@@ -1243,6 +1249,15 @@ export default class RFB extends EventTargetMixin {
         let dX = ev.deltaX;
         let dY = ev.deltaY;
 
+        // Cage: the guest scrolls by the distance itself. A wheel turned
+        // while a button is held keeps the steps below, which carry the mask.
+        if (this._cagePixelWheel && bmask === 0) {
+            const unit = ev.deltaMode === 1 ? WHEEL_LINE_HEIGHT :
+                ev.deltaMode === 2 ? this._canvas.clientHeight : 1;
+            this._cageWheel.add(pos.x, pos.y, dX * unit, dY * unit);
+            return;
+        }
+
         // Pixel units unless it's non-zero.
         // Note that if deltamode is line or page won't matter since we aren't
         // sending the mouse wheel delta to the server anyway.
@@ -1284,6 +1299,17 @@ export default class RFB extends EventTargetMixin {
 
             this._accumulatedWheelDeltaY = 0;
         }
+    }
+
+    _cageSendWheel(x, y, dx, dy) {
+        const send = () => {
+            if (this._rfbConnectionState !== 'connected' || this._viewOnly) return;
+            this._sock.sQpushBytes(cageWheelPacket(this._display.absX(x), this._display.absY(y), dx, dy));
+            this._sock.flush();
+        };
+        // Stay behind input that is still waiting for its turn.
+        if (this._cageInputChain) this._cageQueueInput(send);
+        else send();
     }
 
     _fakeMouseMove(ev, elementX, elementY) {
@@ -2272,6 +2298,9 @@ export default class RFB extends EventTargetMixin {
             encs.push(encodings.pseudoEncodingCursor);
         }
 
+        // Unknown to other servers, which skip it.
+        if (this._cageBrowserDisplay) encs.push(cageWheelEncoding);
+
         RFB.messages.clientEncodings(this._sock, encs);
     }
 
@@ -2511,6 +2540,9 @@ export default class RFB extends EventTargetMixin {
         }
 
         const payload = this._sock.rQshiftStr(length);
+        if ((flags & (1 << 31)) && this._cageBrowserDisplay && payload === cageWheelCapability) {
+            this._cagePixelWheel = true;
+        }
 
         this._supportsFence = true;
 

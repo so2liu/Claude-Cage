@@ -149,6 +149,10 @@ func (s *Server) applyResources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type networkCheckError struct{ error }
+
+func (e networkCheckError) Unwrap() error { return e.error }
+
 func (s *Server) checkNetworkIfWanted() error {
 	s.mu.Lock()
 	paused := s.networkPaused
@@ -156,8 +160,14 @@ func (s *Server) checkNetworkIfWanted() error {
 	if paused || s.macSetupPending() {
 		return nil
 	}
+	var err error
 	if s.macosGuest != nil {
-		return s.checkMacOSNetwork()
+		err = s.checkMacOSNetwork()
+	} else {
+		err = s.runSafetyCheck()
 	}
-	return s.runSafetyCheck()
+	if err != nil {
+		return networkCheckError{err}
+	}
+	return nil
 }

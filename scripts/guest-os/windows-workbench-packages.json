@@ -5,7 +5,7 @@
   "playwright":{"filename":"playwright-1.65.0.tgz","url":"https://registry.npmjs.org/playwright/-/playwright-1.65.0.tgz","sha256":"5c535e6d0b00411c7b926f2f39aeaa80b9daa9ccfa2dd5c21db718cd8808aa42"},
   "playwrightCore":{"filename":"playwright-core-1.65.0.tgz","url":"https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.0.tgz","sha256":"315247c55a793ca760b2f05bdcee0e6a53fd65b1f22d1d3de8323c8c9395add3"},
   "wintun":{"filename":"wintun-0.14.1.zip","url":"https://www.wintun.net/builds/wintun-0.14.1.zip","sha256":"07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"},
-  "desktop":{"filename":"Claude-4.23118.0-x64.msix","url":"https://downloads.claude.ai/releases/win32/x64/4.23118.0/Claude-8175c354eda704cea00fdeddfa69cea329dd321a.msix","sha256":"0432bd1247d4ee241432553d581a89931ea77ffb2abf05165cce23684b610165"},
+  "desktop":{"channel":"latest"},
   "editorCLI":{"filename":"vscode-261c84cb-cli.zip","url":"https://update.code.visualstudio.com/commit:261c84cb1eddf11235f9e2c921425e9663fbe556/cli-win32-x64/stable","sha256":"a1f60568c00594b0b4fa1fa8de215af002e4e864ff47e594f62589447854720f"},
   "editorServer":{"filename":"vscode-261c84cb-server.zip","url":"https://update.code.visualstudio.com/commit:261c84cb1eddf11235f9e2c921425e9663fbe556/server-win32-x64-web/stable","sha256":"e8830dd0c89d351f99a3a5547bae999c6205b00ec3fff6e20a00ee1a808dbd91"}
 }

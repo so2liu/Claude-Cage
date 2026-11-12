@@ -126,6 +126,32 @@ func TestHTTPOnlyEnvironmentKeepsHTTPSSystemProxy(t *testing.T) {
 	}
 }
 
+func TestHostDownloadSubprocessKeepsCapturedProxyAfterGuestSanitization(t *testing.T) {
+	environment.Lock()
+	previous := environment.config
+	environment.config = nil
+	environment.Unlock()
+	t.Cleanup(func() { environment.Lock(); environment.config = previous; environment.Unlock() })
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7896")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7896")
+	t.Setenv("NO_PROXY", "skip.invalid")
+	t.Setenv("no_proxy", "skip.invalid")
+	t.Setenv("https_proxy", "")
+	t.Setenv("http_proxy", "")
+	CaptureEnvironment()
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	got := strings.Join(DownloadEnvironment(), "\n")
+	if !strings.Contains(got, "HTTPS_PROXY=http://127.0.0.1:7896") || !strings.Contains(got, "NO_PROXY=skip.invalid") {
+		t.Fatalf("host subprocess lost captured proxy settings: %s", got)
+	}
+	if os.Getenv("HTTPS_PROXY") != "" {
+		t.Fatal("host settings were restored into the guest process environment")
+	}
+}
+
 // Run manually to verify the real system proxy without changing host settings.
 func TestLiveSystemProxyDownload(t *testing.T) {
 	if testing.Short() {

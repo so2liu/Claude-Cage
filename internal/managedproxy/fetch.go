@@ -3,6 +3,7 @@ package managedproxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -14,35 +15,73 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/sylvinus/agent-vm/internal/hostproxy"
 )
 
-// BootstrapClient is for explicit infrastructure downloads only. It ignores
-// environment proxies and resolves public hosts over IP-addressed DoH URLs.
+// BootstrapClient serves only explicitly host-routed subscription requests.
 func BootstrapClient() *http.Client {
-	tr := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		ip, err := netip.ParseAddr(host)
-		if err != nil {
-			ip, err = resolveInfrastructure(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if !publicIP(ip) {
-			return nil, errors.New("订阅服务器必须使用公网地址")
-		}
-		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-	}, IdleConnTimeout: 10 * time.Second}
-	return &http.Client{Transport: tr, Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &http.Client{Transport: subscriptionHostTransport{hostproxy.NewTransport(), BootstrapDNSURLs()}, Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 3 || r.URL.Scheme != "https" || r.URL.User != nil {
 			return errors.New("订阅重定向被拒绝")
 		}
 		return nil
 	}}
 }
+
+type subscriptionHostTransport struct {
+	host      *http.Transport
+	resolvers []string
+}
+
+func (t subscriptionHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Resolve routing for the original hostname (including on redirects).
+	// Pin both DoH and the subscription transfer to the selected route.
+	routing := req.Clone(req.Context())
+	routing.URL.Path, routing.URL.RawPath, routing.URL.RawQuery = "", "", ""
+	route, err := t.host.Proxy(routing)
+	if err != nil {
+		return nil, err
+	}
+	tr := t.host.Clone()
+	tr.Proxy = http.ProxyURL(route)
+	tr.DisableKeepAlives = true
+	host := req.URL.Hostname()
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		dnsClient := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("DNS redirect refused") }}
+		ip, err = resolveInfrastructureWith(req.Context(), host, dnsClient, t.resolvers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !publicIP(ip) {
+		return nil, errors.New("订阅服务器必须使用公网地址")
+	}
+
+	// CONNECT (or SOCKS) must address the validated IP, while HTTP Host and
+	// TLS SNI/certificate checks still use the subscription's original name.
+	// DoH requests may still be finishing, so configure a separate transport.
+	target := tr.Clone()
+	if target.TLSClientConfig == nil {
+		target.TLSClientConfig = &tls.Config{}
+	}
+	if route != nil && route.Scheme == "https" {
+		// The outer TLS handshake authenticates the proxy, independently of
+		// the inner TLS session established through its CONNECT tunnel.
+		outer := target.TLSClientConfig.Clone()
+		outer.ServerName, outer.NextProtos = route.Hostname(), []string{"http/1.1"}
+		target.DialTLSContext = (&tls.Dialer{Config: outer, NetDialer: &net.Dialer{Timeout: 10 * time.Second}}).DialContext
+	}
+	target.TLSClientConfig.ServerName = host
+	pinned := req.Clone(req.Context())
+	pinned.Host = req.URL.Host
+	pinned.URL.Host = ip.String()
+	if port := req.URL.Port(); port != "" {
+		pinned.URL.Host = net.JoinHostPort(ip.String(), port)
+	}
+	return target.RoundTrip(pinned)
+}
+
 func usageSummary(raw string) string {
 	parts := []string{}
 	for _, field := range strings.Split(raw, ";") {
@@ -67,13 +106,6 @@ func publicIP(ip netip.Addr) bool {
 // Numeric HTTPS endpoints need neither the host resolver nor a working proxy.
 func BootstrapDNSURLs() []string {
 	return []string{"https://1.1.1.1/dns-query", "https://223.5.5.5/dns-query"}
-}
-
-func resolveInfrastructure(ctx context.Context, host string) (netip.Addr, error) {
-	tr := &http.Transport{Proxy: nil}
-	defer tr.CloseIdleConnections()
-	c := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("DNS redirect refused") }}
-	return resolveInfrastructureWith(ctx, host, c, BootstrapDNSURLs())
 }
 
 func resolveInfrastructureWith(ctx context.Context, host string, client *http.Client, servers []string) (netip.Addr, error) {

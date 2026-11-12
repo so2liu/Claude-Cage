@@ -1,58 +1,102 @@
 import React, { useEffect, useRef, useState } from "react";
+import { Check, LoaderCircle } from "lucide-react";
 import { api, native, nativeAvailable } from "./api";
 import { useAccount } from "./account";
 import { MacOSLogin } from "./macos-login";
 import { DiagnosticSettings } from "./diagnostics.jsx";
+import { Modal } from "./modal";
+import "./initialization.css";
 
-const steps = [["screen", "窗口录制"], ["input", "辅助功能"], ["projects", "文件系统扩展"]];
+const steps = [
+  { id: "screen", label: "窗口录制", hint: "打开 Cage Guest Window 的窗口录制开关。如果提示「退出并重新打开」，按提示操作。" },
+  { id: "input", label: "辅助功能", hint: "打开 Cage Guest Window 的辅助功能开关，允许 Cage 操作客机窗口。" },
+  { id: "projects", label: "文件系统扩展", hint: "打开 macFUSE 和 macFUSE (local) 两个开关，用于在客机中访问你选择的项目。" },
+];
 
 export function MacOSFirstSetup() {
   const { account, refresh } = useAccount();
-  const loginName = account?.macos_guest_user || "cage";
+  const [permissionPage, setPermissionPage] = useState("screen");
   const [state, setState] = useState(null);
   const [permissions, setPermissions] = useState({});
   const [error, setError] = useState("");
+  const [readError, setReadError] = useState("");
   const [completionFailed, setCompletionFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [diagnostics, setDiagnostics] = useState(false);
-  const started = useRef(false);
-  const finished = useRef(false);
-  const requested = useRef("");
+  const [details, setDetails] = useState(false);
+  const current = useRef({ account, refresh });
+  current.current = { account, refresh };
+  const control = useRef({ active: false, inFlight: false, started: false, finished: false, requested: "", pending: "" });
+
+  async function request(action) {
+    const lifecycle = action === "start" || action === "stop";
+    const signal = AbortSignal.timeout(action === "finish" ? 60000 : 30000);
+    let result;
+    try {
+      result = await api(lifecycle ? `/${action}` : "/macos/first-setup", action === "start" ? { guest_system: "macos" } : action === "stop" ? {} : { action }, undefined, {}, { signal });
+    } catch (e) {
+      if (signal.aborted) throw new Error("等待客机响应超时。请重新检查状态，确认刚才的操作是否已完成后继续。");
+      // A finish response can be lost after the server has closed this entry.
+      if (e.status === 410) await current.current.refresh();
+      throw e;
+    }
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+
+  // Automatic probes, page changes and explicit retries share one operation slot.
+  // A failed probe retains the previous display but cannot advance the workflow.
+  async function check() {
+    const c = control.current;
+    if (c.inFlight || !c.active) return;
+    c.inFlight = true;
+    setBusy(true);
+    try {
+      const next = await api("/status", undefined, undefined, {}, { signal: AbortSignal.timeout(15000) });
+      if (!c.active) return;
+      setState(next);
+      const credentialsPending = current.current.account.macos_password_pending;
+      if ((!next.vm_running || credentialsPending) && !next.job?.running && !next.job?.error && !next.job?.canceled && !c.started) {
+        c.started = true;
+        setBusy(true);
+        try { await request("start"); }
+        catch (e) { if (c.active) setError(e.message); }
+        return;
+      }
+      if (!next.ready || next.job?.running || credentialsPending) { setReadError(""); return; }
+      const measured = await request("permissions");
+      if (!c.active) return;
+      setReadError("");
+      setPermissions(measured);
+      const pending = steps.find(({ id }) => !measured[id]);
+      if (pending && c.pending !== pending.id) {
+        c.pending = pending.id;
+        setPermissionPage(pending.id);
+      }
+      if (measured.managed_credential && pending && c.requested !== pending.id) {
+        c.requested = pending.id;
+        setPermissionPage(pending.id);
+        setBusy(true);
+        try { await request(pending.id); setError(""); }
+        catch (e) { if (c.active) setError(e.message); }
+      }
+      if (!pending && !c.finished) {
+        c.finished = true;
+        setBusy(true);
+        try { await request("finish"); if (c.active) await current.current.refresh(); }
+        catch (e) { if (c.active) { setCompletionFailed(true); setError(e.message); } }
+      }
+    } catch (e) { if (c.active) setReadError(e.name === "TimeoutError" ? "读取客机状态超时。请重新检查状态；已有安装进度会保留。" : e.message); }
+    finally { c.inFlight = false; if (c.active) setBusy(false); }
+  }
+
   useEffect(() => {
-    let active = true, timer;
+    const c = control.current;
+    c.active = true;
+    let timer;
     async function poll() {
-      try {
-        const next = await api("/status");
-        if (!active) return;
-        setState(next);
-        if ((!next.vm_running || account.macos_password_pending) && !next.job?.running && !next.job?.error && !started.current) {
-          started.current = true;
-          await api("/start", {guest_system:"macos"});
-        }
-        let measured = {};
-        if (next.ready) {
-          try { measured = await api("/macos/first-setup", {action:"permissions"}); }
-          catch { /* OS login and Setup Assistant run before the permission helper. */ }
-        }
-        if (active) setPermissions(measured);
-        const pending = steps.find(([id]) => !measured[id]);
-        if (active && measured.managed_credential && pending && requested.current !== pending[0]) {
-          requested.current = pending[0];
-          try { await api("/macos/first-setup",{action:pending[0]}); }
-          catch (e) { if (active) setError(e.message); }
-        }
-        if (active && steps.every(([id]) => measured[id]) && !finished.current) {
-          finished.current = true;
-          try {
-            const result = await api("/macos/first-setup", {action:"finish"});
-            if (result.error) throw new Error(result.error);
-            if (active) await refresh();
-          } catch (e) {
-            if (active) { setCompletionFailed(true); setError(e.message); }
-          }
-        }
-      } catch (e) { if (active) setError(e.message); }
-      if (active) timer = setTimeout(poll, 2000);
+      await check();
+      if (c.active) timer = setTimeout(poll, 2000);
     }
     poll();
     window.cageWorkbenchAction = async command => {
@@ -61,47 +105,74 @@ export function MacOSFirstSetup() {
     };
     window.cageEditAction = () => false;
     if (nativeAvailable()) native("workbenchReady").catch(() => {});
-    return () => { active = false; clearTimeout(timer); delete window.cageWorkbenchAction; delete window.cageEditAction; };
+    return () => { c.active = false; clearTimeout(timer); delete window.cageWorkbenchAction; delete window.cageEditAction; };
   }, []);
+
   async function act(action) {
-    if (busy) return;
+    const c = control.current;
+    if (c.inFlight) return;
+    c.inFlight = true;
+    if (action === "stop") c.started = true;
+    if (steps.some(({ id }) => id === action)) { setPermissionPage(action); c.requested = action; }
     setBusy(true); setError("");
     try {
-      if (action === "start") await api("/start", {guest_system:"macos"});
-      else {
-        const result = await api("/macos/first-setup", {action});
-        if (result.error) throw new Error(result.error);
-        if (action === "finish") { await refresh(); setCompletionFailed(false); }
-      }
+      await request(action);
+      if (action === "finish") { await current.current.refresh(); setCompletionFailed(false); }
     } catch (e) {
       if (action === "finish") setCompletionFailed(true);
       setError(e.message);
-    }
-    finally { setBusy(false); }
+    } finally { c.inFlight = false; if (c.active) { setBusy(false); void check(); } }
   }
-  const controls = <>{steps.map(([id, label]) => <button key={id} disabled={busy || !state?.ready}
-    onClick={() => act(id)}>{label}{permissions[id] && " ✓"}</button>)}
-    </>;
-  const progress = !state?.ready ? "正在等待虚拟 Mac 就绪；启动后再打开客机系统设置。" :
-    steps.every(([id]) => permissions[id]) ? completionFailed ? "授权已通过，请点击重试完成设置。" : "授权已通过，正在进入工作台…" :
-      `请确认：${steps.filter(([id]) => !permissions[id]).map(([, label]) => label).join("、")}。Cage 会自动检查并继续。`;
-  return <main className="welcome mac-first-setup"><section className="welcome-content">
-    <h1>正在准备虚拟 Mac</h1>
-    <p>Cage 会自动登录、配置并检查环境。首次使用只需确认下面的系统权限；这些操作都在虚拟 Mac 内完成。</p>
-    <ol>
-      <li>在 Cage 打开的「窗口录制」「辅助功能」设置里允许 <strong>Cage Guest Window</strong>。如果提示「退出并重新打开」，按提示操作。需要重新定位时，点击同名按钮。</li>
-      <li>点击「文件系统扩展」，在客机设置中同时打开 <strong>macFUSE</strong> 和 <strong>macFUSE (local)</strong>。Cage 会自动验证并进入工作台。</li>
+
+  const pending = steps.find(({ id }) => !permissions[id]);
+  const selected = steps.find(({ id }) => id === permissionPage);
+  const running = Boolean(state?.job?.running);
+  const canOperate = Boolean(state?.vm_running && !running && !busy);
+  const canFinish = Boolean(state?.ready && !account.macos_password_pending && !pending && !readError);
+  const progress = !state ? "正在读取安装进度…" : running ? state.job.message || "正在启动和配置虚拟 Mac…" :
+    account.macos_password_pending ? "客机密码尚未同步，请重试同步后继续授权。" : !state.vm_running ? "虚拟 Mac 尚未启动，可从已有磁盘继续。" :
+    !state.ready ? "虚拟 Mac 已启动，正在等待客机连接。若停在登录画面，请打开客机画面完成登录。" :
+    readError ? "暂时无法确认权限状态，已显示的结果供参考。恢复连接后会继续检查。" :
+    pending ? `当前需要确认「${pending.label}」。完成后 Cage 会自动检查并继续。` :
+    completionFailed ? "三项权限已验证，最后的设置收尾未完成。请重试完成设置。" : "三项权限已验证，正在保存设置；随后继续工作区授权和联网检查。";
+  const controls = <button type="button" className="primary" disabled={!canOperate} onClick={() => act(pending?.id || permissionPage)}>
+    {busy ? "正在处理…" : `打开${pending?.label || selected.label}`}
+  </button>;
+  const failure = error || readError || (!running && state?.job?.error) || (!state?.ready && state?.environment_update_error);
+
+  return <main className="initialization"><section className="initialization-content mac-setup-content">
+    <div className="initialization-title"><p className="mac-setup-eyebrow">安装与检查 · macOS 系统权限</p><h1>完成虚拟 Mac 的系统授权</h1>
+      <p>安装文件和客机磁盘已保留。下面三项授权在虚拟 Mac 内完成，每项验证通过后会自动继续。</p></div>
+    <ol className="mac-setup-checklist" aria-label="系统授权进度">
+      {steps.map(({ id, label }, index) => <li key={id} data-complete={Boolean(permissions[id])} aria-current={pending?.id === id ? "step" : undefined}>
+        <span className="mac-setup-marker">{permissions[id] ? <Check size={16} aria-hidden="true" /> : index + 1}</span>
+        <span>{label}</span><small>{permissions[id] ? "已验证" : pending?.id === id ? "等待确认" : "稍后确认"}</small>
+      </li>)}
     </ol>
-    <p>授权时若要求管理员，用户名填 <strong>cagesetup</strong>，{account.macos_password_pending ? "密码正在等待同步，完成前可能仍需原客机密码。" : account.macos_credentials_ready ? "密码与 Cage 账户相同。" : "可点选系统密码框后点击「填写授权密码」。"}确认后继续授权。此管理员在完成后自动停用。</p>
-    {(!state?.vm_running || account.macos_password_pending) && <button className="primary" disabled={busy || !state || state.job?.running} onClick={() => act("start")}>{account.macos_password_pending ? "重试同步客机密码" : "启动虚拟 Mac"}</button>}
-    {state?.vm_running && <MacOSLogin initialSetup autoOpen={Boolean(permissions.managed_credential)} managedCredential={permissions.managed_credential} disabled={!state.ready} setupActions={controls}
-      setupHint={`Cage 自动登录 ${loginName}。管理员授权用 cagesetup；打开两个 macFUSE 开关后会自动继续。`}
-      setupStatus={error || progress} setupError={Boolean(error)} />}
-    <div className="welcome-shortcuts">{controls}</div>
-    <p role="status">{progress}</p>
-    {(completionFailed || error) && <button className="primary" disabled={busy || !steps.every(([id]) => permissions[id])} onClick={() => act("finish")}>重试完成设置</button>}
-    {(error || (!state?.ready && state?.job?.error)) && <p role="alert">{error || state.job.error}</p>}
-    <button className="text-button" onClick={() => setDiagnostics(!diagnostics)}>日志与诊断</button>
+    <section className="initialization-operation mac-setup-task" aria-label="当前设置步骤">
+      <h2>{!state?.ready ? "连接虚拟 Mac" : pending ? `确认${pending.label}` : "完成系统设置"}</h2>
+      <p role="status">{busy && <LoaderCircle size={16} className="spin" aria-hidden="true" />} {progress}</p>
+      {pending && state?.ready && <><p>{selected.hint}</p>{pending.id === "projects" && permissions.projects_error && <p>{permissions.projects_error}</p>}</>}
+      <div className="initialization-recovery">
+        {state && !running && (!state.ready || account.macos_password_pending || state.job?.error) && <button className="primary" disabled={busy} onClick={() => act("start")}>{account.macos_password_pending ? "重试同步客机密码" : "继续启动并连接"}</button>}
+        {pending && state?.ready && controls}
+        {completionFailed && <button className="primary" disabled={busy || !canFinish} onClick={() => act("finish")}>重试完成设置</button>}
+        <button disabled={busy || running} onClick={() => void check()}>重新检查状态</button>
+      </div>
+      {running && <button disabled={busy} onClick={() => act("stop")}>停止当前操作，保留进度</button>}
+      {state?.vm_running && <MacOSLogin initialSetup autoOpen={Boolean(permissions.managed_credential)} managedCredential={permissions.managed_credential} disabled={!canOperate}
+        label="打开客机画面" setupActions={controls} setupHint={`${selected.hint} 系统要求管理员时，用户名填 cagesetup；选中密码框后可点击「填写授权密码」。`}
+        setupStatus={failure || progress} setupError={Boolean(failure)} />}
+    </section>
+    {failure && <section className="initialization-notice" role="alert"><h2>这一步尚未完成</h2><p>{failure}</p><p>已有安装进度会保留。可以重新打开当前设置页，或重新检查状态后继续。</p></section>}
+    <details className="mac-setup-help"><summary>管理员密码与找不到设置页时的帮助</summary>
+      <p>系统要求管理员时，用户名填 <strong>cagesetup</strong>，{account.macos_password_pending ? "密码同步完成前可能仍需原客机密码。" : account.macos_credentials_ready ? "密码与 Cage 账户相同。" : "在客机画面中选中密码框，再点击「填写授权密码」。"}你确认授权后继续；此临时管理员在收尾时停用。</p>
+      <p>文件系统扩展的手动入口：客机「系统设置 → 通用 → 登录项与扩展 → 按类别 → 文件系统扩展」，同时打开 macFUSE 和 macFUSE (local)。</p>
+      <div className="initialization-recovery">{steps.map(({ id, label }) => <button key={id} disabled={!canOperate} onClick={() => act(id)}>重新打开{label}</button>)}</div>
+    </details>
+    <p className="mac-setup-retention">系统授权完成后，还会确认共享工作区和网络隔离。全部检查通过后即可进入工作台。</p>
+    <div className="initialization-support"><button className="text-button" onClick={() => setDetails(true)}>查看操作详情</button><button className="text-button" onClick={() => setDiagnostics(!diagnostics)}>日志与诊断</button></div>
     {diagnostics && <DiagnosticSettings />}
+    {details && <Modal title="系统设置操作详情" onClose={() => setDetails(false)}><div className="modal-body"><p>{progress}</p>{failure && <p role="alert">{failure}</p>}<pre className="job-log">{state?.job?.log || "当前步骤没有额外操作日志。可通过「日志与诊断」导出完整记录。"}</pre></div></Modal>}
   </section></main>;
 }

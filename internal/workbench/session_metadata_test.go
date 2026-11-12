@@ -1,15 +1,146 @@
 package workbench
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+func TestSessionArchiveContentionInBrowser(t *testing.T) {
+	if os.Getenv("CAGE_TEST_ARCHIVE_BROWSER") == "" {
+		t.Skip("set CAGE_TEST_ARCHIVE_BROWSER after building the UI to test with real archive handlers")
+	}
+	s, id, project := metadataFixture(t)
+	record, _ := s.mobileCLI.record(s.profile, id)
+	record.Title = "软件宣传视频制作"
+	if err := writePrivate(mobileRecordPath(s.profile, id), record); err != nil {
+		t.Fatal(err)
+	}
+	s.op.Lock()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(s.op.Unlock) }
+	defer release()
+	var archives atomic.Int32
+	handler := s.handler()
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fixture/release-operation" {
+			release()
+			jsonReply(w, map[string]bool{"ok": true})
+			return
+		}
+		if r.URL.Path == "/api/cli/sessions/"+id+"/archive" {
+			archives.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer host.Close()
+	// Release a blocked request before httptest waits for its handler at cleanup.
+	defer release()
+	s.origin = host.URL
+	input, _ := json.Marshal(map[string]string{
+		"origin": host.URL, "cookie": s.cookieName() + "=" + s.session,
+		"id": id, "workspace": project, "title": record.Title,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	driver := exec.CommandContext(ctx, "node", "../../ui/scripts/archive-contention-smoke.mjs")
+	driver.Env = append(os.Environ(), "CAGE_TEST_BROWSER="+os.Getenv("CAGE_TEST_ARCHIVE_BROWSER"))
+	driver.Stdin = strings.NewReader(string(input))
+	if output, err := driver.CombinedOutput(); err != nil {
+		t.Fatalf("browser: %v\n%s", err, output)
+	} else {
+		t.Log(string(output))
+	}
+	if archives.Load() != 1 {
+		t.Fatalf("archive submissions: %d", archives.Load())
+	}
+	s.mobileCLI = mobileCLIStore{}
+	restored, err := s.mobileCLI.record(s.profile, id)
+	if err != nil || !restored.Archived || restored.Deleted {
+		t.Fatal("UI archive was not durable", restored, err)
+	}
+}
+
+func TestSessionArchiveWaitsForEnvironmentOperation(t *testing.T) {
+	for _, route := range []string{"/api/cli/sessions/", "/api/mobile/cli/sessions/"} {
+		t.Run(route, func(t *testing.T) {
+			s, id, project := metadataFixture(t)
+			// Network monitoring holds this lock even when the UI reports no job.
+			s.op.Lock()
+			locked := true
+			defer func() {
+				if locked {
+					s.op.Unlock()
+				}
+			}()
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- request(s, "POST", route+id+"/archive", s.origin, `{}`, true) }()
+			select {
+			case response := <-done:
+				t.Fatalf("archive rejected during background operation: %d %s", response.Code, response.Body.String())
+			case <-time.After(100 * time.Millisecond):
+			}
+			s.op.Unlock()
+			locked = false
+			select {
+			case response := <-done:
+				if response.Code != http.StatusOK {
+					t.Fatal(response.Code, response.Body.String())
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("archive did not finish after background operation released the lock")
+			}
+			if len(s.terminals.snapshot()) != 0 {
+				t.Fatal("archive left its terminal visible")
+			}
+			s.mobileCLI = mobileCLIStore{}
+			active, err := s.mobileCLI.summaries(s.profile, map[string]bool{project: true}, false)
+			if err != nil || len(active) != 0 {
+				t.Fatal("archived session remained active after reload", active, err)
+			}
+			archived, err := s.mobileCLI.summaries(s.profile, map[string]bool{project: true}, true)
+			if err != nil || len(archived) != 1 || archived[0].ID != id {
+				t.Fatal("archived history was not retained", archived, err)
+			}
+		})
+	}
+}
+
+func TestSessionArchiveDoesNotApplyCancelledRequest(t *testing.T) {
+	s, id, _ := metadataFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.op.Lock()
+	done := make(chan error, 1)
+	go func() { done <- s.setSessionArchived(id, true, ctx) }()
+	select {
+	case err := <-done:
+		s.op.Unlock()
+		t.Fatalf("archive did not wait for the operation: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	s.op.Unlock()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled archive: %v", err)
+	}
+	record, err := s.mobileCLI.record(s.profile, id)
+	if err != nil || record.Archived || len(s.terminals.snapshot()) != 1 {
+		t.Fatal("cancelled archive changed the session", record, err)
+	}
+}
 
 func metadataFixture(t *testing.T) (*Server, string, string) {
 	t.Helper()

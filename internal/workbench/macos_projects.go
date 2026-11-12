@@ -182,7 +182,7 @@ func (s *Server) probeMacOSProject(ctx context.Context, hostDir, guestDir string
 				message := string(share.stderr.data)
 				_ = diagnostics.New(s.profile).Record("warn", "macos-project-mount", message)
 				if strings.Contains(strings.ToLower(message), "not enabled") {
-					return &projectShareError{Recovery: "filesystem-permission", Message: "虚拟 Mac 的文件系统扩展尚未启用。请在客机系统设置中同时启用 macFUSE 和 macFUSE (local)，然后重新连接项目。"}
+					return &projectShareError{Recovery: "filesystem-permission", Message: "虚拟 Mac 的文件系统扩展尚未启用。请打开客机授权设置，按提示打开 macFUSE 和 macFUSE (local) 两个开关，Cage 会自动检查并重新连接项目。"}
 				}
 			}
 			return &projectShareError{Recovery: "project-retry", Message: "客机文件共享连接已中断。Cage 会自动重试，持续失败时可查看诊断记录。"}

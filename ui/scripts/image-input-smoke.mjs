@@ -25,7 +25,7 @@ await page.route("**/api/input/image", async (route) => {
   });
   await route.fulfill(
     fail
-      ? { status: 502, body: "测试：图片传递失败" }
+      ? { status: 502, contentType: "text/plain; charset=utf-8", body: "测试：图片传递失败" }
       : {
           json: {
             path: "/home/cage/.local/share/cage/attachments/image-test.png",
@@ -217,7 +217,7 @@ try {
   );
   assert.equal(received[2].target, "terminal");
   fail = true;
-  await imageEvent(".terminal-host", "drop");
+  await imageEvent(".xterm-helper-textarea", "paste");
   await poll(() => received.length === 4);
   await page.keyboard.press("Enter");
   release();

@@ -30,6 +30,9 @@ export function httpErrorMessage(path, status, text = "", contentType = "", meth
   // explanations. Preserve short Chinese messages supplied by Cage itself.
   const message = text.trim();
   if (contentType.startsWith("text/plain") && message.length <= 2000 && /\p{Script=Han}/u.test(message) && !/<(?:html|body|script|!doctype)\b/i.test(message)) return message;
+  if (path === "/settings" && method === "POST" && status === 503) {
+    return "暂时无法确认设置是否已保存（HTTP 503）。请在连接恢复后核对设置和操作详情，再决定是否重新保存。";
+  }
   const action = operationName(path, method);
   const reasons = {
     400: "后台没有接受这次请求。请核对填写的内容；仍失败时在设置中导出诊断包。",

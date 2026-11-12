@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Windows.Automation;
+using System.Runtime.InteropServices;
 
 namespace Cage.GuestClipboard;
 
@@ -8,6 +9,22 @@ namespace Cage.GuestClipboard;
 // UI Automation is read-only here; it never chooses an arbitrary application.
 internal static class WindowsIme
 {
+    [StructLayout(LayoutKind.Sequential)] private struct CursorInfo { public int Size, Flags; public IntPtr Handle; public System.Drawing.Point Point; }
+    [DllImport("user32.dll")] private static extern bool GetCursorInfo(ref CursorInfo info);
+    [DllImport("user32.dll")] private static extern IntPtr LoadCursorW(IntPtr instance, IntPtr name);
+    private static string CursorShape(int process)
+    {
+        var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
+        if (!GetCursorInfo(ref info)) return "default";
+        if (info.Handle == LoadCursorW(IntPtr.Zero, (IntPtr)32513)) return "text";
+        if (info.Handle == LoadCursorW(IntPtr.Zero, (IntPtr)32649)) return "pointer";
+        // Chromium may use its own I-beam handle. Read only the owned
+        // application element under the guest pointer in that case.
+        var element = AutomationElement.FromPoint(new System.Windows.Point(info.Point.X, info.Point.Y));
+        if (element?.Current.ProcessId == process && element.Current.IsEnabled && !element.Current.IsOffscreen &&
+            element.Current.ControlType == ControlType.Edit) return "text";
+        return "default";
+    }
     private sealed record Focus(string Context, double[] Rect, bool Password);
     private sealed record Composition(string ID, string Context, int Sequence, DateTime Updated);
     private static readonly SemaphoreSlim Probes = new(1, 1);
@@ -62,13 +79,19 @@ internal static class WindowsIme
             return new JsonObject { ["available"] = false };
         }
         if (!await Probes.WaitAsync(0,token)) return new JsonObject { ["available"] = false };
-        var probe = Task.Run(() => { try { return Probe(process,windowTarget,x,y); } finally { Probes.Release(); } });
+        var cursor = "default";
+        var probe = Task.Run(() => {
+            try {
+                try { cursor = CursorShape(process); } catch { }
+                return Probe(process,windowTarget,x,y);
+            } finally { Probes.Release(); }
+        });
         Focus? focus;
         try { focus = await probe.WaitAsync(TimeSpan.FromSeconds(2),token); }
         catch (Exception e) when (e is not OperationCanceledException) { return new JsonObject { ["available"] = false }; }
-        if (focus is null || !SessionGuard.Available()) { composition = null; return new JsonObject { ["available"] = false }; }
+        if (focus is null || !SessionGuard.Available()) { composition = null; return new JsonObject { ["available"] = false, ["cursor"] = cursor }; }
         if (composition is not null && (composition.Context != focus.Context || DateTime.UtcNow-composition.Updated > TimeSpan.FromSeconds(30))) composition = null;
-        JsonObject Snapshot() => new() { ["available"] = true, ["context"] = focus.Context, ["rect"] = new JsonArray(focus.Rect.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()), ["preedit_supported"] = false, ["password"] = focus.Password };
+        JsonObject Snapshot() => new() { ["available"] = true, ["cursor"] = cursor, ["context"] = focus.Context, ["rect"] = new JsonArray(focus.Rect.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()), ["preedit_supported"] = false, ["password"] = focus.Password };
         if (mode == "status") { if (composition?.ID == id) composition = composition with { Updated = DateTime.UtcNow }; return Snapshot(); }
         if (mode == "begin")
         {

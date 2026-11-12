@@ -104,3 +104,71 @@ try {
   await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));
 } finally { await browser.close(); }
+
+{
+  let grant = "", generation = 0, approved = false;
+  const f = await createWorkbench({
+    initialization: { required: true, tracked: true, started: true, prepared: true },
+    async beforeNavigate(page, state) {
+      state.account.guest_system = "macos";
+      Object.assign(state.status, {
+        guest_system: "macos", ready: true, vm_running: true,
+        job: { kind: "safety", running: true, message: "正在检查客机网络" },
+        safety: { gate: { mode: "open", until: new Date(Date.now() + 3600000).toISOString() } },
+        project_errors: [{ path: state.status.environment_directory, recovery: "project-approval" }],
+      });
+      const image = await page.evaluate(() => document.createElement("canvas").toDataURL().split(",")[1]);
+      await page.route("**/api/projects/open", route => {
+        const request = route.request().postDataJSON();
+        assert.deepEqual(request, { workspace: state.status.environment_directory, add: false, activate: false });
+        if (approved) state.status.project_errors = [];
+        else if (!grant) grant = "setup-grant-" + ++generation;
+        return route.fulfill({ json: { workspace: request.workspace, approval: approved ? "" : grant } });
+      });
+      await page.route("**/api/macos/project-approval", route => {
+        const q = route.request().postDataJSON();
+        if (!grant || q.grant !== grant) return route.fulfill({
+          status: 409, headers: { "Content-Type": "text/plain; charset=utf-8", "X-Cage-Recovery": "project-approval-ended" }, body: "项目授权请求已失效，请重新请求授权。",
+        });
+        if (q.action === "frame") return route.fulfill({ json: { image, window: 1, pid: 2, nonce: grant } });
+        if (q.action === "click") { assert.equal(q.nonce, grant); approved = true; }
+        if (q.action === "cancel") grant = "";
+        return route.fulfill({ json: {} });
+      });
+    },
+  });
+  try {
+    const region = f.page.getByRole("region", { name: "默认工作区访问" });
+    const open = region.getByRole("button", { name: "查看并授权" });
+    const dialog = f.page.getByRole("dialog", { name: "允许客机访问所选项目" });
+    const enter = f.page.getByRole("button", { name: "进入工作台", exact: true });
+    await open.waitFor();
+    await region.getByText(f.state.status.environment_directory, { exact: true }).waitFor();
+    assert.equal(await dialog.count(), 0);
+    assert.equal(generation, 0, "polling must not open the guest dialog");
+    await open.click();
+    await dialog.getByText("当前客机操作结束后，会显示项目授权窗口。").waitFor();
+    assert.equal(generation, 0);
+    f.state.status.job.running = false;
+    await dialog.getByRole("img").waitFor();
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(grant, "");
+    await enter.waitFor();
+    assert.ok(await enter.isEnabled(), "optional project approval cannot gate workbench entry");
+    await open.click();
+    await dialog.getByRole("img").waitFor();
+    grant = "";
+    await dialog.getByRole("button", { name: "重新请求授权" }).click();
+    await dialog.getByRole("img").waitFor();
+    assert.equal(generation, 3);
+    await dialog.getByRole("button", { name: "验证授权" }).click();
+    assert.equal(approved, false, "verification must not approve a pending project");
+    await dialog.getByRole("img").click();
+    await dialog.waitFor({ state: "hidden" });
+    await enter.click();
+    await f.page.getByRole("complementary", { name: "项目与终端" }).waitFor();
+    assert.deepEqual(f.errors, []);
+    console.log("PASS macOS initialization: default project approval, cancellation, expiry, renewal, verification and workbench entry");
+  } finally { await f.browser.close(); }
+}

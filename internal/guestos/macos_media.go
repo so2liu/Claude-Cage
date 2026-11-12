@@ -35,8 +35,12 @@ func PrepareMacOSMedia(ctx context.Context, profile, kit, cache string, refresh 
 }
 
 func prepareMacOSMedia(ctx context.Context, kit, cache, proxy string, refresh bool, stdout, stderr io.Writer) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "/bin/bash", filepath.Join(kit, "prepare-macos-media.sh"), cache)
-	cmd.Env = macOSMediaEnvironment(os.Environ(), proxy, refresh)
+	cmd.Env = append(macOSMediaEnvironment(os.Environ(), proxy, refresh), "CAGE_HOST_DOWNLOADER="+exe)
 	configureMediaCommand(cmd)
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -54,7 +58,7 @@ func macOSMediaEnvironment(parent []string, proxy string, refresh bool) []string
 	for _, entry := range parent {
 		key, _, _ := strings.Cut(entry, "=")
 		switch strings.ToLower(key) {
-		case "http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy", "cage_refresh_tools":
+		case "http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy", "cage_refresh_tools", "cage_host_downloader":
 			continue
 		}
 		env = append(env, entry)

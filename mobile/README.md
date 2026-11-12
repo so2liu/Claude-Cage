@@ -2,7 +2,46 @@
 
 手机 Cage 是远程客户端。点首页中央的「连接电脑」，用二维码或配对码连接主机，即可查看项目、接续 Claude Code 会话和处理工具审批。配对后还可在手机上操作主机里的浏览器和 Claude Desktop。代理、时区和语言在远程主机的 Cage 中设置。右上角的设置提供主题和电脑连接选项。
 
-Android 开发版提供 arm64 调试 APK。iPhone 设备版可通过 Xcode 为自己的测试设备签名后安装。
+Android arm64 APK 可从[官网下载入口](https://lee-xeo.github.io/Claude-Cage/#download)获取，支持 Android 8.0+。iOS 17+ 设备版由用户通过 Xcode 在本地构建并签名安装。
+
+## iOS 本地构建
+
+在 Mac 安装完整 Xcode 与 iOS SDK，并完成 Xcode 首次启动设置。安装 Node.js 24 和符合 `bindings/go.mod` 的 Go 后，在仓库根目录执行。
+
+```sh
+npm ci --prefix ui
+bash mobile/build.sh ios
+open mobile/ios/CageMobile.xcodeproj
+```
+
+命令会生成 `mobile/.build/ios/Cagemobile.xcframework` 和未签名的设备构建。在 Xcode 选择 `CageMobile` scheme 和自己的开发团队，连接 iPhone，按系统提示启用开发者模式，再通过 Run 签名安装。需要导出开发 IPA 时运行以下命令，将 `TEAM_ID` 替换为自己的十位 Apple Team ID。
+
+```sh
+bash mobile/build.sh ios-ipa TEAM_ID
+```
+
+归档与 IPA 保存在 `mobile/.build/ios/device-*/`，导出后会验证设备描述文件与应用签名。
+
+## Android 构建与签名
+
+准备 JDK 21、Android SDK Platform 35、Build Tools 35.0.0 与 NDK 27.2.12479018，并将 `JAVA_HOME`、`ANDROID_HOME` 指向各自的安装目录。安装 UI 依赖后，可在仓库根目录生成本地开发 APK。
+
+```sh
+npm ci --prefix ui
+bash mobile/build.sh android
+```
+
+公开发行使用持久保存的签名密钥和独立的密码文件。以下路径由构建者自行设置，签名材料保存在源码和临时构建目录之外，限制为本人可读。后续 APK 更新沿用同一签名身份，并使用大于上一版的 Android versionCode。[Android 签名说明](https://developer.android.com/studio/publish/app-signing)
+
+```sh
+export CAGE_ANDROID_KEYSTORE=/private/signing/release.p12
+export CAGE_ANDROID_KEY_ALIAS=release
+export CAGE_ANDROID_PASSWORD_FILE=/private/signing/keystore-password
+export CAGE_ANDROID_VERSION_CODE=2
+bash mobile/build.sh android-release
+```
+
+发行 APK 的 versionName 读取根目录 `VERSION`，输出为 `mobile/.build/android/Cage-<版本>-android-arm64.apk`。签名和 16 KiB 对齐检查通过后才写入最终文件。发布时附带 SHA-256，并核对签名证书指纹、应用版本、安装与覆盖更新行为。
 
 ## 扫码连接电脑
 

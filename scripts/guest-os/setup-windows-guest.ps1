@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$Profile,
@@ -17,6 +17,25 @@ $ProgressPreference='SilentlyContinue'
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $principal=[Security.Principal.WindowsPrincipal]::new($identity)
 . (Join-Path $PSScriptRoot 'windows-host-image.ps1')
+
+function Wait-CageWindowsInstaller($Process, [string]$ProgressFile) {
+    $lastStage = ''
+    do {
+        $exited = $Process.WaitForExit(250)
+        $stage = ''
+        $reader = $null
+        try {
+            $reader = [IO.StreamReader]::new([IO.File]::Open($ProgressFile, 'Open', 'Read', 'ReadWrite'))
+            $stage = $reader.ReadToEnd()
+        } catch [IO.IOException] { }
+        finally { if ($reader) { $reader.Dispose() } }
+        if ($stage -cmatch '^CAGE_GUEST_STAGE windows-11 (account|oobe|credentials|media|tools|services)$' -and $stage -cne $lastStage) {
+            Write-Output $stage
+            $lastStage = $stage
+        }
+    } while (!$exited)
+}
+
 if(!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
     if($identity.User.Value -cne $HostUserSID){throw 'Continue setup with the already authorized host user.'}
     if($HostEnrollment){throw 'Original user enrollment must be created by this setup process.'}
@@ -34,20 +53,54 @@ if(!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     }
     # Preserve every selected installation argument across the one-time UAC
     # boundary. Encoded data cannot become executable PowerShell syntax.
-    $parameters=@{Profile=$Profile;State=$State;InstallationID=$InstallationID.ToString('D');IsoPath=$IsoPath;ExpectedIsoSha256=$ExpectedIsoSha256;ManifestPath=$ManifestPath;ManifestSHA256=$ManifestSHA256;HostUserSID=$HostUserSID;HostEnrollment=$context}
+    $progressFile=Join-Path ([IO.Path]::GetTempPath()) ('cage-windows-setup-'+[guid]::NewGuid().ToString('N')+'.stage')
+    # Hold the new file without delete sharing across UAC. The elevated writer
+    # opens this existing file once, so its path cannot be replaced mid-install.
+    $progressHandle=[IO.File]::Open($progressFile,'CreateNew','ReadWrite','ReadWrite')
+    $parameters=@{Profile=$Profile;State=$State;InstallationID=$InstallationID.ToString('D');IsoPath=$IsoPath;ExpectedIsoSha256=$ExpectedIsoSha256;ManifestPath=$ManifestPath;ManifestSHA256=$ManifestSHA256;HostUserSID=$HostUserSID;HostEnrollment=$context;ProgressFile=$progressFile}
     $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($parameters|ConvertTo-Json -Depth 6 -Compress)))
     $script=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PSCommandPath))
-    $command='$ErrorActionPreference=''Stop'';$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('''+$payload+'''))|ConvertFrom-Json;$a=@{};$p.PSObject.Properties|ForEach-Object{$a[$_.Name]=$_.Value};$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('''+$script+'''));try{& $s @a;exit 0}catch{Write-Error $_;exit 1}'
+    $command=@'
+$ErrorActionPreference='Stop'
+$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PARAMETERS__'))|ConvertFrom-Json
+$a=@{}
+$p.PSObject.Properties|ForEach-Object{$a[$_.Name]=$_.Value}
+$progressFile=$a.ProgressFile
+$a.Remove('ProgressFile')
+$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SCRIPT__'))
+$progressStream=$null
+try {
+    $progressStream=[IO.File]::Open($progressFile,'Open','Write','ReadWrite')
+    & $s @a | ForEach-Object {
+        $line=[string]$_
+        if ($line -cmatch '^CAGE_GUEST_STAGE windows-11 (account|oobe|credentials|media|tools|services)$') {
+            $bytes=[Text.Encoding]::UTF8.GetBytes($line)
+            $progressStream.Position=0
+            $progressStream.SetLength(0)
+            $progressStream.Write($bytes,0,$bytes.Length)
+            $progressStream.Flush()
+        }
+        Write-Output $_
+    }
+    exit 0
+} catch { Write-Error $_; exit 1 }
+finally { if ($progressStream) { $progressStream.Dispose() } }
+'@
+    $command=$command.Replace('__PARAMETERS__',$payload).Replace('__SCRIPT__',$script)
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     try{
-        if($context){Wait-CageHostEnrollment $context}
+        if($context){Wait-CageHostEnrollment $context $worker}
         $process=Start-Process -FilePath (Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell/v1.0/powershell.exe') -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','RemoteSigned','-EncodedCommand',$encoded) -Verb RunAs -PassThru
+        # Windows PowerShell 5.1 must retain a handle before waiting to read ExitCode.
+        $null=$process.Handle
         if($context){Set-CageHostEnrollmentAdmin $context $process}
-        $process.WaitForExit()
+        Wait-CageWindowsInstaller $process $progressFile
         if($process.ExitCode -ne 0){throw 'Windows setup did not complete; existing VM and data were preserved.'}
     }finally{
         if($context){try{Stop-CageHostEnrollment $context}catch{}}
         if($worker){if(!$worker.WaitForExit(5000) -and [Cage.HostEnrollment.Native]::Started([uint32]$worker.Id) -eq [long]$context.WorkerStarted){$worker.Kill();$worker.WaitForExit()};$worker.Dispose()}
+        $progressHandle.Dispose()
+        try { [IO.File]::Delete($progressFile) } catch [IO.IOException] { }
     }
     return
 }
@@ -100,6 +153,7 @@ if ($readyToProvision) {
     if (!$vm.Count) {
         $imageOptions = @{}
         if ($fromHost) { $imageOptions = @{ ImageEdition=$owner.source.host.edition; ImageLanguage=$owner.source.host.language; ImageBuild=$owner.source.build; GuestAdministrator=$setupCredential } }
+        else { Write-Output 'CAGE_GUEST_STAGE windows-11 account' }
         $created=& (Join-Path $PSScriptRoot 'new-windows-guest.ps1') -Name $name -IsoPath $IsoPath -ExpectedIsoSha256 $ExpectedIsoSha256 -InstanceDirectory $instance -Confirm:$false @imageOptions
         $vm=Hyper-V\Get-VM -Id $created.VMId
     } elseif ($vm.Count -eq 1) { $vm=$vm[0] }
@@ -116,13 +170,13 @@ if ($readyToProvision) {
 if ($vm.State -eq 'Off') { Hyper-V\Start-VM -VM $vm; $vm=Hyper-V\Get-VM -Id $vm.Id }
 if ($vm.State -ne 'Running') { throw 'The private Windows guest is not running yet. Retry after its current operation.' }
 if (!$readyToProvision -and !$fromHost) {
-    & (Join-Path ([Environment]::GetFolderPath('System')) 'vmconnect.exe') localhost $name
-    Write-Output 'Complete Windows Setup, then continue installation in Cage and authenticate with the guest administrator.'
+    Start-Process -FilePath (Join-Path ([Environment]::GetFolderPath('System')) 'vmconnect.exe') -ArgumentList @('localhost',$name)
+    Write-Output 'CAGE_GUEST_STAGE windows-11 oobe'
+    Write-Output '在虚拟机连接窗口完成 Windows 安装，用安装前设置的本地管理员登录桌面，再回 Cage 点击「已进入桌面，继续安装」。本轮 PowerShell 创建窗口会自动关闭。'
     return
 }
 $componentsReady = (Test-Path -LiteralPath (Join-Path $instance 'cage-workbench/pair/workbench-components-ready')) -and
     (Test-Path -LiteralPath (Join-Path $instance 'cage-workbench/pair/windows-guest.json'))
 if ($fromHost -and $setupCredential -and !$published -and !$componentsReady) { Wait-CageWindowsSetup $vm.Id $setupCredential }
-Write-Output 'CAGE_GUEST_STAGE windows-11 tools'
 & (Join-Path $PSScriptRoot 'complete-windows-guest.ps1') -VMId $vm.Id -InstanceDirectory $instance -HostProfileDirectory $Profile -HostUserSID $HostUserSID -StateDirectory $state -HostEnrollment $HostEnrollment -ManifestPath $ManifestPath -ManifestSHA256 $ManifestSHA256 -GuestAdministrator $setupCredential
 Write-Output 'CAGE_GUEST_STAGE windows-11 services'

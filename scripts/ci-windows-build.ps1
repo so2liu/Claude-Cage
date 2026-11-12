@@ -18,6 +18,10 @@ $storageTestRoot = $null
 try {
     $actual = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $actual -ne $env:CAGE_BUILD_REF) { throw 'Checkout differs from the requested commit.' }
+    $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
+    foreach ($test in @('windows-workbench-packages.tests.ps1', 'claude-desktop-windows.tests.ps1', 'windows-claude-cli.tests.ps1')) {
+        Invoke-BuildTool $windowsPowerShell @('-NoProfile', '-NonInteractive', '-File', "scripts/guest-os/$test")
+    }
     if ($Release) {
         if ($env:GITHUB_EVENT_NAME -ne 'workflow_dispatch') { throw 'Release candidates require an explicitly dispatched release workflow.' }
         if ($env:CAGE_WINDOWS_SIGNING_PROVIDER -eq 'esigner') {
@@ -61,6 +65,12 @@ try {
         $qemuSource = Join-Path $repository '_output/windows-qemu-sources/full-source.tar.gz'
     }
     & (Join-Path $PSScriptRoot 'build-windows.ps1') -Release:$Release
+    Invoke-BuildTool $windowsPowerShell @('-NoProfile', '-NonInteractive', '-File', 'scripts/guest-os/windows-host-enrollment.tests.ps1')
+    foreach ($test in @('windows-iso-setup.tests.ps1', 'windows-host-image.tests.ps1', 'new-windows-test-vm.tests.ps1')) {
+        Invoke-BuildTool $windowsPowerShell @('-NoProfile', '-NonInteractive', '-File', "scripts/guest-os/$test")
+    }
+    Invoke-BuildTool 'go' @('test', './internal/guestos', '-run', '^TestWindows(HostEnrollment|UserToolACL)', '-count=1')
+    Invoke-BuildTool 'go' @('test', './internal/hostproxy', './internal/guestos', './cmd/cage', '-run', '^Test(ParallelPackage|DownloadLockCancellationAndReuse|WindowsPackageDownloadUsesBundledHostDownloader|HostDownloadParentExitCancels)', '-count=1')
     if (-not $Release) {
         $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
         foreach ($test in @('install-guest-powershell.tests.ps1', 'windows-evaluation.tests.ps1')) {

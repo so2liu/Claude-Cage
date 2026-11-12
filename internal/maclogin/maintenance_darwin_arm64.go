@@ -17,7 +17,6 @@ import (
 	"errors"
 	"io"
 	"os/exec"
-	"strings"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -86,13 +85,7 @@ func (s *loginSession) maintenanceProbe(open bool) (maintenanceWindow, error) {
 		return result, errors.New("客机维护组件需要更新，请在环境设置中更新组件")
 	}
 	if result.Error != "" {
-		message := "请保持系统设置或系统授权窗口位于客机前台，再重新打开维护画面"
-		if result.Error == "requires_gui_login" {
-			message = "请先登录并解锁虚拟 Mac 的客机账户"
-		} else if strings.Contains(result.Error, "obscured") {
-			message = "授权窗口被其他窗口遮挡，请关闭遮挡窗口后重新打开维护画面"
-		}
-		return result, errors.New(message)
+		return result, errors.New(result.probeMessage())
 	}
 	if !open && !result.valid(user) {
 		return result, errors.New("客机授权窗口身份无法确认，请重新打开维护画面")

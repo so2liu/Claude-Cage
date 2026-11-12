@@ -582,9 +582,11 @@ func RunWindowsHostEnrollment(parent context.Context, options WindowsHostEnrollm
 	}()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	listener, err := winio.ListenPipe(`\\.\pipe\`+options.Pipe, &winio.PipeConfig{SecurityDescriptor: "O:" + options.HostSID + "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;" + options.HostSID + ")", InputBufferSize: enrollmentWireLimit, OutputBufferSize: enrollmentWireLimit})
+	// go-winio opens a second server instance after creating its placeholder.
+	// The ordinary owner needs FILE_CREATE_PIPE_INSTANCE (0x4) for that open.
+	listener, err := winio.ListenPipe(`\\.\pipe\`+options.Pipe, &winio.PipeConfig{SecurityDescriptor: "O:" + options.HostSID + "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019f;;;" + options.HostSID + ")", InputBufferSize: enrollmentWireLimit, OutputBufferSize: enrollmentWireLimit})
 	if err != nil {
-		return errors.New("enrollment_pipe_unavailable")
+		return enrollmentPipeError("listen", err)
 	}
 	defer listener.Close()
 	var active sync.WaitGroup
@@ -618,7 +620,7 @@ func RunWindowsHostEnrollment(parent context.Context, options WindowsHostEnrollm
 			if ctx.Err() != nil {
 				return nil
 			}
-			return errors.New("enrollment_pipe_unavailable")
+			return enrollmentPipeError("accept", err)
 		}
 		select {
 		case slots <- struct{}{}:

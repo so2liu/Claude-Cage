@@ -86,7 +86,7 @@ func TestCageDebianMirrors(t *testing.T) {
 		if len(images) != 3 {
 			t.Fatalf("%s: expected two mirrors and one upstream, got %+v", arch, images)
 		}
-		for i, base := range []string{"https://mirrors.nju.edu.cn/debian-cdimage/cloud/", "https://mirrors.ustc.edu.cn/debian-cdimage/cloud/", "https://cloud.debian.org/images/cloud/"} {
+		for i, base := range []string{"https://cloud.debian.org/images/cloud/", "https://mirrors.nju.edu.cn/debian-cdimage/cloud/", "https://mirrors.ustc.edu.cn/debian-cdimage/cloud/"} {
 			if !strings.HasPrefix(images[i].Location, base) || images[i].Digest != images[2].Digest || images[i].Digest.Validate() != nil {
 				t.Fatalf("unexpected image or missing pin: %+v", images[i])
 			}

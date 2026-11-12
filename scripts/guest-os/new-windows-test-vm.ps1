@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
 Create an offline Windows 11 x64 test VM on a local Hyper-V host.
@@ -10,6 +10,9 @@ disk and guest TPM state stay together after shutdown. Use the returned VMId
 as -ExpectedVMId for claude-desktop-windows.ps1. -Start boots only this VM.
 Windows Setup installs PowerShell 7 for all guest users. Supply -PowerShellZip
 to use an existing copy of the pinned Microsoft archive on an offline host.
+Manual ISO setup prompts for the guest's initial local administrator. Supply
+-GuestAdministrator to provide it directly. Windows Setup uses the protected
+answer DVD to create that account without a network connection.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -29,8 +32,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-guest-media.ps1')
+. (Join-Path $PSScriptRoot 'windows-host-image.ps1')
 $fromHost = ![string]::IsNullOrEmpty($ImageEdition)
-if ($fromHost) { . (Join-Path $PSScriptRoot 'windows-host-image.ps1') }
 
 function Set-TestVMResources($VM, [int]$Processors, [long]$MemoryBytes) {
     # New-VM can inherit Dynamic Memory with a 1 TiB maximum on a client host.
@@ -80,6 +83,15 @@ if ([IO.DriveInfo]::new($parent.Root.FullName).AvailableFreeSpace -lt $requiredF
 }
 if (!$PSCmdlet.ShouldProcess($directory, "Create offline Hyper-V VM '$Name' (start: $([bool]$Start))")) { return }
 
+if ($fromHost) {
+    $answer = New-CageCloneAnswer $GuestAdministrator $ImageLanguage
+} else {
+    if (!$GuestAdministrator) {
+        $GuestAdministrator = Get-Credential -UserName 'CageAdmin' -Message '设置虚拟 Windows 的初始本地管理员和密码。安装后用此账户登录客机，并在 Cage 继续安装时再次输入。'
+    }
+    $answer = New-CageISOAnswer $GuestAdministrator
+}
+
 # Create with a protected ACL, then claim the requested name using a same-volume
 # rename that fails atomically if another creation has already won.
 $acl = [Security.AccessControl.DirectorySecurity]::new()
@@ -108,10 +120,8 @@ try {
     [IO.Directory]::Move($staging, $directory)
     $staged = $false
     $claimed = $true
-    # On a normal install Windows Setup still asks for edition, disk, license
-    # and account. The second DVD contributes only the guest development tools.
-    $answer = [xml]'<unattend xmlns="urn:schemas-microsoft-com:unattend"><settings pass="specialize"/></unattend>'
-    if ($fromHost) { $answer = New-CageCloneAnswer $GuestAdministrator $ImageLanguage }
+    # The protected second DVD supplies the chosen local account and tools.
+    # Windows Setup still asks for edition, disk, license and regional settings.
     New-WindowsGuestAnswerISO $toolsISO $answer $PowerShellZip
     $ownsToolsISO = $true
     $vm = New-VM -Name $Name -Generation 2 -MemoryStartupBytes ($MemoryGiB * 1GB) -NoVHD -Path $directory

@@ -30,6 +30,7 @@ type guestCredentials struct {
 	Token        string  `json:"token"`
 	VNCPassword  string  `json:"-"`
 	DisplayScale float64 `json:"display_scale"`
+	DynamicScale bool    `json:"dynamic_scale"`
 }
 
 func (s *Server) workspaceLocked() string {
@@ -213,6 +214,7 @@ func (s *Server) attach() error {
 	s.mu.Unlock()
 	s.restoreProjectShares()
 	s.desktopViews.background(s.changeDesktopVisibility)
+	s.browserViews.background(s.changeBrowserVisibility)
 	return nil
 }
 func (s *Server) monitor(ctx context.Context) {
@@ -310,6 +312,8 @@ func (s *Server) runCage(args ...string) error {
 }
 func (s *Server) startEnvironment(syncTimezone bool) error {
 	s.desktopViews.reset()
+	s.browserViews.reset()
+	s.controlSession.close()
 	s.desktopStatus.invalidate()
 	defer s.desktopStatus.invalidate()
 	if err := s.requireStorageReady(); err != nil {
@@ -433,7 +437,7 @@ func (s *Server) startEnvironment(syncTimezone bool) error {
 		bound := cfg.ExitPolicy.BindMissing(loc.exitLocation())
 		if bound != cfg.ExitPolicy {
 			cfg.ExitPolicy = bound
-			if err = writePrivate(s.configPath, cfg); err != nil {
+			if err = s.saveExitPolicyConfig(cfg); err != nil {
 				return err
 			}
 		}
@@ -604,7 +608,12 @@ func (s *Server) apply(v savedProfile, validate bool) error {
 			return err
 		}
 	}
-	if err = writePrivate(s.configPath, v.Config); err != nil {
+	if v.Config.RequireManagedProxy(s.profile) == nil {
+		err = s.saveExitPolicyConfig(v.Config)
+	} else {
+		err = writePrivate(s.configPath, v.Config)
+	}
+	if err != nil {
 		return err
 	}
 	if err = writePrivate(filepath.Join(s.profile, "workbench.json"), v.Preferences); err != nil {
@@ -615,6 +624,7 @@ func (s *Server) apply(v savedProfile, validate bool) error {
 	s.preferences = v.Preferences
 	token, ready := s.credentials.Token, s.ready
 	s.mu.Unlock()
+	s.jobs.execution().settingsSaved()
 	if !changed && ready && browserHomeURL(oldPrefs) != browserHomeURL(v.Preferences) {
 		ctx, cancel := s.controlContext()
 		defer cancel()
@@ -623,8 +633,13 @@ func (s *Server) apply(v savedProfile, validate bool) error {
 		}
 	}
 	if changed && wasReady {
+		s.setMessage("正在重新连接客机…")
 		if err = s.startEnvironment(false); err != nil {
-			return fmt.Errorf("新设置已保存，但环境未能启动。可以重试启动，或恢复上一份配置：%w", err)
+			var network networkCheckError
+			if errors.As(err, &network) {
+				return fmt.Errorf("设置已保存，环境已启动。外网仍关闭，修复以下问题后可重新检测：%w", err)
+			}
+			return fmt.Errorf("设置已保存，环境尚未恢复就绪。请核对客机状态后重试启动：%w", err)
 		}
 	}
 	return nil

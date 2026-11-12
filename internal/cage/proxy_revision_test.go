@@ -31,6 +31,7 @@ func TestProxyRevisionRevokesOldReportAtSameEndpoint(t *testing.T) {
 	}
 	next := cfg
 	next.ProxyRevision = "second"
+	next.ExitPolicy = ExitPolicy{Mode: "static", IP: "1.1.1.1"}
 	if err = g.SyncProxyRevision(next); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +49,11 @@ func TestProxyRevisionRevokesOldReportAtSameEndpoint(t *testing.T) {
 		t.Fatal("old report authorized a new node")
 	}
 	changed := next
+	changed.ExitPolicy.IP = "8.8.8.8"
+	if err = g.SyncProxyRevision(changed); err == nil {
+		t.Fatal("same proxy generation silently replaced its bound IP")
+	}
+	changed = next
 	changed.ProxyURL = "socks5://127.0.0.1:3333"
 	if err = g.SyncProxyRevision(changed); err == nil {
 		t.Fatal("transport changed without environment restart")
@@ -117,5 +123,49 @@ func TestProxyRevisionControlUpdatesHostRunningRecord(t *testing.T) {
 	}
 	if err = cfg.CheckRunning(state); err == nil {
 		t.Fatal("old configuration still matches running record")
+	}
+}
+
+func TestProxyRevisionCompletesOnlyMissingExitAnchor(t *testing.T) {
+	for _, policy := range []ExitPolicy{
+		{Mode: "static", Scope: "country"},
+		{Mode: "dynamic", Scope: "city", CountryCode: "US"},
+	} {
+		cfg := DefaultConfig()
+		cfg.ProxyRevision = "same-node"
+		cfg.ExitPolicy = policy
+		gate, err := NewEgressGate(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := cfg
+		next.ExitPolicy = policy.BindMissing(ExitLocation{IP: "8.8.8.8", CountryCode: "US", Region: "California", City: "Mountain View"})
+		if err := gate.SyncProxyRevision(next); err != nil {
+			t.Fatal("first binding required a VM restart", err)
+		}
+		if got := gate.Status(); got.Mode != GateClosed || got.Configuration != next.Fingerprint() || got.Report != nil {
+			t.Fatal("first binding reused authorization")
+		}
+		changed := next
+		changed.ExitPolicy.IP = "1.1.1.1"
+		changed.ExitPolicy.CountryCode = "JP"
+		if err := gate.SyncProxyRevision(changed); err == nil {
+			t.Fatal("completed binding accepted a replacement anchor")
+		}
+		gate.Close("done")
+	}
+	cfg := DefaultConfig()
+	cfg.ProxyRevision = "same-node"
+	cfg.ExitPolicy = ExitPolicy{Mode: "dynamic", Scope: "city", CountryCode: "US"}
+	gate, err := NewEgressGate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close("done")
+	cfg.ExitPolicy.CountryCode = "JP"
+	cfg.ExitPolicy.Region = "Tokyo"
+	cfg.ExitPolicy.City = "Tokyo"
+	if err := gate.SyncProxyRevision(cfg); err == nil {
+		t.Fatal("partial binding overwrote an existing country")
 	}
 }

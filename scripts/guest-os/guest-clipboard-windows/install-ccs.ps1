@@ -20,14 +20,28 @@ function Assert-NoReparse([string]$Path) {
     while ($null -ne $item) { if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'A native CCS path is a reparse point.' }; if ($item -is [IO.FileInfo]) { $item=$item.Directory } else { $item=$item.Parent } }
 }
 function Protect-Path([string]$Path,[bool]$Directory) {
-    if ($Directory) { $acl=New-Object Security.AccessControl.DirectorySecurity } else { $acl=New-Object Security.AccessControl.FileSecurity }
-    $acl.SetOwner($user.User);$acl.SetAccessRuleProtection($true,$false)
+    $ownerSection = [Security.AccessControl.AccessControlSections]::Owner
+    $accessSection = [Security.AccessControl.AccessControlSections]::Access
+    if ($Directory) {
+        $existing = [Security.AccessControl.DirectorySecurity]::new($Path, $ownerSection)
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+    } else {
+        $existing = [Security.AccessControl.FileSecurity]::new($Path, $ownerSection)
+        $acl = New-Object Security.AccessControl.FileSecurity
+    }
+    if ($existing.GetOwner([Security.Principal.SecurityIdentifier]) -ne $user.User) { throw 'The Cage tool path must already belong to the current GUI user.' }
+    $acl.SetAccessRuleProtection($true,$false)
     foreach ($sid in @($user.User,[Security.Principal.SecurityIdentifier]'S-1-5-18',[Security.Principal.SecurityIdentifier]'S-1-5-32-544')) {
         if ($Directory) { $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow') }
         else { $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow') }
         $acl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    # Change only Access on a descriptor loaded without Audit. Set-Acl can
+    # request SeSecurityPrivilege when persisting a newly built descriptor.
+    $existing.SetSecurityDescriptorSddlForm($acl.GetSecurityDescriptorSddlForm($accessSection), $accessSection)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { $item.SetAccessControl($existing) }
+    else { [IO.FileSystemAclExtensions]::SetAccessControl($item, $existing) }
 }
 function PrivateDirectory([string]$Path) {
     $parent=[IO.DirectoryInfo]$Path

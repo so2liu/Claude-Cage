@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/google/uuid"
@@ -71,6 +72,10 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Windows host manager action did not complete.")
+		var pipeError *guestos.WindowsHostEnrollmentPipeError
+		if errors.As(err, &pipeError) {
+			fmt.Fprintln(os.Stderr, pipeError)
+		}
 		os.Exit(1)
 	}
 }

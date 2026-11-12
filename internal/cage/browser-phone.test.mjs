@@ -64,7 +64,8 @@ test("real phone Chromium routes, resizes, types, and keeps paired profiles sepa
         <input aria-label="draft"><input type=password aria-label="password">
         <script>
         const show = () => document.title = JSON.stringify([innerWidth, innerHeight,
-          document.querySelector("input").value, document.cookie, scrollY, navigator.maxTouchPoints, navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone, devicePixelRatio]);
+          document.querySelector("input").value, document.cookie, scrollY, navigator.maxTouchPoints, navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone, devicePixelRatio,
+          navigator.webdriver, Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get.toString()]);
         oninput = onresize = onscroll = show; show();
         </script>`);
     });
@@ -115,6 +116,7 @@ test("real phone Chromium routes, resizes, types, and keeps paired profiles sepa
     let page = await read(([w, h, , cookie, , touch]) => w === 390 && h === 750 && cookie === "state=known" && touch >= 1);
     assert.equal(JSON.parse(page.title)[6], "ja-JP");
     assert.equal(JSON.parse(page.title)[8], 2);
+    assert.deepEqual(JSON.parse(page.title).slice(9), [false, "function get webdriver() { [native code] }"]);
     assert.match(acceptLanguage, /^ja-JP/i);
     if (process.env.TZ) assert.equal(JSON.parse(page.title)[7], Intl.DateTimeFormat().resolvedOptions().timeZone);
     assert.ok(Buffer.from(page.image, "base64").subarray(0, 2).equals(Buffer.from([255, 216])));

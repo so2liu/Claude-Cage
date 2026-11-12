@@ -18,6 +18,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/sylvinus/agent-vm/internal/netguard"
+	"github.com/sylvinus/agent-vm/internal/usererror"
 	"golang.org/x/net/proxy"
 )
 
@@ -58,6 +59,21 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
+func proxyConnectionError(ctx context.Context, action string, err error) error {
+	// Closing a stalled handshake on cancellation can report net.ErrClosed.
+	// Preserve the operation deadline so exit monitoring can classify a timeout.
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	} else if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		// The socket deadline can fire before the context timer publishes Err.
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			err = errors.Join(context.DeadlineExceeded, err)
+		}
+	}
+	return usererror.Wrap(action, err, "请检查代理；请求不会改为直连。")
+}
+
 // DialContext is used for all guest TCP connections and DoH. DNS names are
 // passed to the proxy without resolving them on the host.
 func (e *Egress) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -78,13 +94,13 @@ func (e *Egress) DialContext(ctx context.Context, network, addr string) (net.Con
 		}
 		c, err := d.(proxy.ContextDialer).DialContext(ctx, "tcp", addr)
 		if err != nil {
-			return nil, errors.New("cage upstream SOCKS5 connection failed; direct fallback is disabled")
+			return nil, proxyConnectionError(ctx, "连接指定 SOCKS5 代理", err)
 		}
 		return c, nil
 	}
 	conn, err := e.connect.DialContext(ctx, "tcp", e.upstream.Host)
 	if err != nil {
-		return nil, errors.New("cage upstream proxy unavailable; direct fallback is disabled")
+		return nil, proxyConnectionError(ctx, "连接指定代理", err)
 	}
 	// Cancellation must interrupt a stalled CONNECT response, not only the
 	// initial TCP connect. Stop the callback before returning a live tunnel.
@@ -103,7 +119,7 @@ func (e *Egress) DialContext(ctx context.Context, network, addr string) (net.Con
 	if e.upstream.Scheme == "https" {
 		t := tls.Client(conn, &tls.Config{ServerName: e.upstream.Hostname(), MinVersion: tls.VersionTLS12})
 		if err = t.HandshakeContext(ctx); err != nil {
-			return nil, errors.New("cage HTTPS proxy TLS handshake failed")
+			return nil, proxyConnectionError(ctx, "验证 HTTPS 代理的加密连接", err)
 		}
 		conn = t
 	}
@@ -113,15 +129,15 @@ func (e *Egress) DialContext(ctx context.Context, network, addr string) (net.Con
 		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(e.upstream.User.Username()+":"+p)))
 	}
 	if err = req.Write(conn); err != nil {
-		return nil, errors.New("cage proxy CONNECT write failed")
+		return nil, proxyConnectionError(ctx, "发送代理 CONNECT 请求", err)
 	}
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, req)
 	if err != nil {
-		return nil, errors.New("cage proxy CONNECT response failed")
+		return nil, proxyConnectionError(ctx, "读取代理 CONNECT 响应", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cage proxy rejected CONNECT (HTTP %d); direct fallback is disabled", resp.StatusCode)
+		return nil, fmt.Errorf("代理拒绝 CONNECT 请求（HTTP %d）；请求不会改为直连", resp.StatusCode)
 	}
 	conn.SetDeadline(time.Time{})
 	ok = true

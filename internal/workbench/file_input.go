@@ -125,26 +125,39 @@ func (s *Server) guestFiles(ctx context.Context, target, method, path string, bo
 		}
 		script += " " + shellescape.Quote("http://localhost"+path)
 	}
+	var stderr fileControlStderr
+	var data []byte
+	var err, readErr error
+	shared := false
 	if target != "terminal" && method == "GET" && path == "/requests" {
 		script = desktopFilesPoll + script
+		// The workbench asks for pending requests every second or two.
+		var reply guestSessionReply
+		if reply, shared, err = s.guestShared(ctx, script); shared {
+			data, stderr.data = reply.stdout, reply.stderr
+			if err == nil && reply.code != 0 {
+				err = fmt.Errorf("exit status %d", reply.code)
+			}
+		}
 	}
-	command := "exec /bin/bash --noprofile --norc -c " + shellescape.Quote(script)
-	cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", command)
-	var stderr fileControlStderr
-	cmd.Stderr = &stderr
-	cmd.Stdin = body
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
+	if !shared {
+		command := "exec /bin/bash --noprofile --norc -c " + shellescape.Quote(script)
+		cmd := s.sshCommand(ctx, "-T", s.sshTarget(), "--", command)
+		cmd.Stderr = &stderr
+		cmd.Stdin = body
+		pipe, pipeErr := cmd.StdoutPipe()
+		if pipeErr != nil {
+			return nil, pipeErr
+		}
+		if err = cmd.Start(); err != nil {
+			return nil, usererror.Wrap("连接文件传递服务", err, "请确认 Cage 安装完整，环境已经启动；持续失败时在设置中导出诊断包。")
+		}
+		data, readErr = io.ReadAll(io.LimitReader(pipe, 65537+64))
+		if readErr != nil || len(data) > 65536+64 {
+			_ = cmd.Process.Kill()
+		}
+		err = cmd.Wait()
 	}
-	if err = cmd.Start(); err != nil {
-		return nil, usererror.Wrap("连接文件传递服务", err, "请确认 Cage 安装完整，环境已经启动；持续失败时在设置中导出诊断包。")
-	}
-	data, readErr := io.ReadAll(io.LimitReader(pipe, 65537+64))
-	if readErr != nil || len(data) > 65536+64 {
-		_ = cmd.Process.Kill()
-	}
-	err = cmd.Wait()
 	httpStatus := 0
 	if at := bytes.LastIndex(data, []byte("\nCAGE_FILE_HTTP:")); at >= 0 && target != "terminal" {
 		httpStatus, _ = strconv.Atoi(strings.TrimSpace(string(data[at+len("\nCAGE_FILE_HTTP:"):])))

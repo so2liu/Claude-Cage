@@ -178,7 +178,7 @@ func (s *Server) changeProxy(action string, in proxyInput, resumeVersion *uint64
 			}
 			p.Port = in.Port
 		}
-		return s.applyProxy(p, cfg, resumeVersion)
+		return s.applyProxy(p, cfg, resumeVersion, action != "restart")
 	}
 	index := -1
 	for i, src := range p.Sources {
@@ -282,7 +282,7 @@ func (s *Server) changeProxy(action string, in proxyInput, resumeVersion *uint64
 			}
 			return p.Save(s.profile)
 		}
-		return s.applyProxy(p, cfg, resumeVersion)
+		return s.applyProxy(p, cfg, resumeVersion, false)
 	}
 	return p.Save(s.profile)
 }
@@ -314,10 +314,10 @@ func (s *Server) closeProxyGate(reason string) error {
 func (s *Server) activateProxy(p managedproxy.Store, old cage.Config) (returned error) {
 	// The explicit start operation already requested networking. A pause made
 	// after that request must survive any core recovery within the start.
-	return s.applyProxy(p, old, nil)
+	return s.applyProxy(p, old, nil, false)
 }
 
-func (s *Server) applyProxy(p managedproxy.Store, old cage.Config, resumeVersion *uint64) (returned error) {
+func (s *Server) applyProxy(p managedproxy.Store, old cage.Config, resumeVersion *uint64, selectExit bool) (returned error) {
 	ctx := s.operationContext()
 	previous, err := managedproxy.Load(s.profile)
 	if err != nil {
@@ -350,10 +350,11 @@ func (s *Server) applyProxy(p managedproxy.Store, old cage.Config, resumeVersion
 		}
 	}()
 	p.Revision = managedproxy.Token()
+	cfg := old
+	cfg.ExitPolicy = selectProxyExitPolicy(&p, previous, old.ExitPolicy, selectExit)
 	if err := p.Save(s.profile); err != nil {
 		return err
 	}
-	cfg := old
 	cfg.ProxyURL = p.Endpoint()
 	cfg.ProxyRevision = p.Revision
 	if err := writePrivate(s.configPath, cfg); err != nil {

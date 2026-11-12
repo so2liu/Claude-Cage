@@ -114,7 +114,7 @@ export function GuestSystemPicker({ system, onChange, preserveOnUnmount = false,
           </div>}
           <small>客机账户和独立密码由 Cage 自动准备并加密保管，启动时自动登录。</small>
         </> : <>
-          <small>Windows 11 x64 需要 Hyper-V 和至少 64 GiB 可用磁盘空间。宿主安装开发组件时需要同一 Windows 账户的管理员权限。完成 Windows 安装后，通过客机管理员确认一次，Cage 会创建专用普通账户并重启客机。</small>
+          <small>Windows 11 x64 需要 Hyper-V 和至少 64 GiB 可用磁盘空间。安装前在授权窗口设置客机本地管理员，Cage 会生成离线账户应答。进入客机桌面后回 Cage 继续，使用该账户确认组件安装。Cage 随后创建专用普通账户并重启客机。</small>
           {!system.pending && <div>
             <button type="button" onClick={() => reference("windows-media")}>从微软下载 ISO</button>
             <button type="button" onClick={choose}>选择本机 ISO</button>

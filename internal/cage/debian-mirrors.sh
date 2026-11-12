@@ -28,7 +28,11 @@ for repository in debian debian-security; do
   suite=$(. /etc/os-release; printf '%s' "${VERSION_CODENAME:-trixie}")
   [ "$repository" != debian-security ] || suite="$suite-security"
   priority=0
-  if [ "$preference" = auto ]; then
+  # Prefer the official CDN when it works through the guest's configured
+  # network. Probe domestic mirrors only after the official source fails.
+  if [ "$preference" = auto ] && ! timeout 8 /usr/lib/apt/apt-helper -o Acquire::Retries=0 \
+      -o Acquire::http::Timeout=5 -o Acquire::https::Timeout=5 \
+      download-file "$official/dists/$suite/InRelease" "$probe" >/dev/null 2>&1; then
     for mirror in "https://mirrors.nju.edu.cn/$repository" "https://mirrors.ustc.edu.cn/$repository"; do
       rm -f "$probe"
       if timeout 8 /usr/lib/apt/apt-helper -o Acquire::Retries=0 \

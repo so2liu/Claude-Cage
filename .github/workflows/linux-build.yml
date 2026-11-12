@@ -29,17 +29,23 @@ jobs:
       image: ubuntu:22.04
       # docker-default AppArmor denies bubblewrap's private mount namespace.
       # Relax only this disposable outer container; WebKit keeps its sandbox.
-      options: --security-opt seccomp=unconfined --security-opt systempaths=unconfined --security-opt apparmor=unconfined
+      options: --init --dns 1.1.1.1 --dns 8.8.8.8 --security-opt seccomp=unconfined --security-opt systempaths=unconfined --security-opt apparmor=unconfined
     steps:
       - name: Install build and test dependencies
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjson-glib-dev dpkg-dev curl ca-certificates git software-properties-common qemu-system-x86 qemu-utils ovmf openssh-client iproute2 dbus-x11 xvfb xauth fonts-noto-cjk zsh sudo
-          # The supported 22.04 ABI predates safe.bareRepository. Use the Git
-          # project's documented Ubuntu packages, preserving the runtime gate.
-          add-apt-repository -y ppa:git-core/ppa
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y git
+          getent hosts archive.ubuntu.com
+          getent hosts security.ubuntu.com
+          apt-get -o APT::Update::Error-Mode=any update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjson-glib-dev dpkg-dev curl ca-certificates git qemu-system-x86 qemu-utils ovmf openssh-client iproute2 dbus-x11 xvfb xauth fonts-noto-cjk zsh sudo tzdata
+          # Ubuntu 22.04 predates safe.bareRepository. Build the signed upstream
+          # v2.52.0 revision on this ABI without needing the Launchpad PPA API.
+          DEBIAN_FRONTEND=noninteractive apt-get install -y libssl-dev libcurl4-openssl-dev libexpat1-dev zlib1g-dev gettext
+          git init -q /tmp/git-source
+          git -C /tmp/git-source fetch --depth=1 https://github.com/git/git.git 9a2fb147f2c61d0cab52c883e7e26f5b7948e3ed
+          git -C /tmp/git-source checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/git-source rev-parse HEAD)" = 9a2fb147f2c61d0cab52c883e7e26f5b7948e3ed
+          make -C /tmp/git-source -j4 prefix=/usr/local NO_TCLTK=YesPlease install > /tmp/git-install.log
+          hash -r
           dpkg --compare-versions "$(git --version | awk '{print $3}')" ge 2.38
           useradd -m -s /bin/bash cage
           echo "cage ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cage
@@ -77,7 +83,7 @@ jobs:
           bash scripts/package-linux.sh --skip-build
           npm test --prefix ui
           npm run --prefix ui lint
-          node --test internal/cage/browser-clipboard.test.mjs
+          node --test internal/cage/browser-clipboard.test.mjs internal/cage/native-input.test.mjs internal/cage/display-density.test.mjs
       - name: Linux executable tests as an ordinary user
         env:
           UV_CACHE_DIR: /home/cage/.cache/uv
@@ -91,6 +97,7 @@ jobs:
           runuser -u cage -- go test ./internal/... ./cmd/...
           runuser -u cage -- go vet ./internal/managedproxy ./internal/workbench ./cmd/cage
           runuser -u cage -- uv run --no-project --python 3.11 internal/cage/desktop-downloads.test.py
+          runuser -u cage -- uv run --no-project --python 3.11 internal/cage/display-governor.test.py
       - name: Ubuntu guest browser, extensions and noVNC dependencies
         run: runuser -u cage -- bash scripts/test-ubuntu-guest.sh
       - name: Install, render native workbench, reinstall and remove
@@ -141,7 +148,7 @@ jobs:
         image: [debian:12, ubuntu:24.04]
     container:
       image: ${{ matrix.image }}
-      options: --security-opt seccomp=unconfined --security-opt systempaths=unconfined --security-opt apparmor=unconfined
+      options: --init --dns 1.1.1.1 --dns 8.8.8.8 --security-opt seccomp=unconfined --security-opt systempaths=unconfined --security-opt apparmor=unconfined
     steps:
       - name: Install package test tools
         run: |

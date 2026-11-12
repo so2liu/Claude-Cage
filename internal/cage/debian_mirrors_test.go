@@ -10,7 +10,7 @@ import (
 
 func TestDebianMirrorFailureFallbackAndPreference(t *testing.T) {
 	old := "https://mirrors.nju.edu.cn/debian\tpriority:1\nhttps://mirrors.ustc.edu.cn/debian\tpriority:2\nhttps://deb.debian.org/debian\tpriority:3\n"
-	for _, mode := range []string{"reachable", "bookworm", "tls-failure", "nju-failure", "official", "custom", "old", "reboot", "invalid"} {
+	for _, mode := range []string{"reachable", "bookworm", "tls-failure", "official-failure", "nju-failure", "official", "custom", "old", "reboot", "invalid"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			mirrors := filepath.Join(dir, "mirrors")
@@ -37,7 +37,10 @@ func TestDebianMirrorFailureFallbackAndPreference(t *testing.T) {
 				"apt-helper": `#!/bin/sh
 printf '%s\n' "$*" >> "$FIXTURE/probes"
 [ "$MODE" != tls-failure ] || exit 1
-case "$*" in *mirrors.nju*) [ "$MODE" != nju-failure ] || exit 1;; esac
+case "$*" in
+ *deb.debian.org*) [ "$MODE" != nju-failure ] && [ "$MODE" != official-failure ] || exit 1;;
+ *mirrors.nju*) [ "$MODE" != nju-failure ] || exit 1;;
+esac
 exit 0
 `,
 				"timeout": "#!/bin/sh\nshift\nexec \"$@\"\n",
@@ -78,7 +81,7 @@ exit 0
 				if got != content {
 					t.Fatal("custom source overwritten")
 				}
-			case "official", "tls-failure":
+			case "official", "tls-failure", "reachable", "bookworm", "old", "reboot":
 				if strings.Contains(got, "mirrors.") || !strings.Contains(got, "deb.debian.org") {
 					t.Fatal(got)
 				}
@@ -100,6 +103,9 @@ exit 0
 				probes, err := os.ReadFile(filepath.Join(dir, "probes"))
 				if err != nil || !strings.Contains(string(probes), "/dists/"+suite+"/InRelease") || !strings.Contains(string(probes), "/dists/"+suite+"-security/InRelease") {
 					t.Fatalf("wrong distribution probes: %s, %v", probes, err)
+				}
+				if strings.Contains(string(probes), "mirrors.") {
+					t.Fatal("reachable official source still contacted domestic mirrors")
 				}
 			}
 			if out, err := run(); err != nil {

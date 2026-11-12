@@ -165,6 +165,7 @@ export class PhoneBrowser {
       "--headless=new", "--disable-extensions", "--disable-quic", "--disable-background-networking",
       "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
       "--disable-sync", "--disable-dev-shm-usage", "--remote-debugging-pipe",
+      "--disable-blink-features=AutomationControlled",
       "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
       "--proxy-server=socks5://127.0.0.1:" + proxy.port, "--proxy-bypass-list=<-loopback>",
       "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",

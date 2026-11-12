@@ -1,9 +1,24 @@
 package guestos
 
 import (
-	"github.com/google/uuid"
+	"errors"
+	"os"
+	"syscall"
 	"testing"
+
+	"github.com/google/uuid"
 )
+
+func TestWindowsHostEnrollmentPipeDiagnostic(t *testing.T) {
+	err := enrollmentPipeError("accept", &os.PathError{Op: "open", Path: `\\.\pipe\private-fixture`, Err: syscall.Errno(5)})
+	if err.Error() != "enrollment_pipe_accept_failed (win32=5)" {
+		t.Fatalf("pipe diagnostic lost its code or exposed private data: %s", err)
+	}
+	var diagnostic *WindowsHostEnrollmentPipeError
+	if !errors.As(err, &diagnostic) {
+		t.Fatal("the helper cannot recognize a safe pipe diagnostic")
+	}
+}
 
 func TestWindowsHostEnrollmentFixedAuthorityAndRole(t *testing.T) {
 	vm := uuid.New()

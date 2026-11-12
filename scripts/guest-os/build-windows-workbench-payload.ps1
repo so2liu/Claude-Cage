@@ -1,5 +1,6 @@
 # Build Cage-owned assets only. Third-party Windows packages are fetched when
-# Windows is selected, with the digests in windows-workbench-packages.json.
+# Windows is selected. Claude releases resolve from official metadata then;
+# other packages use the digests in windows-workbench-packages.json.
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Destination)
 $ErrorActionPreference='Stop'
@@ -23,7 +24,7 @@ try {
     Push-Location (Join-Path $root 'tools/tailnet')
     try { go build -trimpath -ldflags '-s -w' -o (Join-Path $dest 'cage-tailnet.exe') .; if ($LASTEXITCODE) { throw 'Could not build Cage Tailscale.' } } finally { Pop-Location }
     Copy-Item -LiteralPath (Join-Path $root 'internal/cage/tailnet-client.mjs') -Destination $dest
-    foreach ($file in @('windows-browser.mjs','windows-browser-extensions.mjs','windows-phone-browser.mjs','windows-workbench-packages.json','install-windows-workbench-user-tools.ps1')) {
+    foreach ($file in @('windows-browser.mjs','windows-browser-extensions.mjs','windows-phone-browser.mjs','windows-workbench-packages.json','install-windows-workbench-user-tools.ps1','claude-desktop-windows.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $dest
     }
     foreach ($file in @('install-cli.ps1','cli-dependencies.json')) {

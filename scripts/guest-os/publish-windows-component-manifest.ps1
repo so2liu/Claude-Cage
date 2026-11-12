@@ -1,4 +1,4 @@
-# Records only the files verified in this fixed guest after installation.
+﻿# Records only the files verified in this fixed guest after installation.
 param([guid]$VMId,[string]$GUIUserSID,[string]$ManifestJSON)
 $ErrorActionPreference='Stop'
 if ([guid](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters').VirtualMachineId -ne $VMId -or

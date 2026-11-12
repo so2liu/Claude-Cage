@@ -12,6 +12,7 @@ test("HTTP failures name the operation and avoid upstream HTML or opaque runtime
   const specific = "上传窗口已关闭，请重新点击网页上传按钮";
   assert.equal(httpErrorMessage("/input/files", 409, specific, "text/plain; charset=utf-8"), specific);
   assert.match(connectionErrorMessage("/input/files"), /传递文件.*连接已中断.*核对结果/);
+  assert.match(httpErrorMessage("/settings", 503, "", "", "POST"), /无法确认设置是否已保存.*核对设置/);
 });
 
 test("native errors retain precise rules and explain opaque failures in context", () => {

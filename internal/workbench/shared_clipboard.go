@@ -3,7 +3,9 @@ package workbench
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +25,23 @@ import (
 )
 
 const clipboardWireLimit = 30 << 20
+
+// 保留当前后端配套的客机脚本，使已有 Linux 客机也能建立剪贴板连接。
+// 将脚本压缩为单个参数，避免完整脚本经过两层转义后超出 Windows 进程命令行上限。
+var linuxClipboardCommand = sync.OnceValues(func() (string, error) {
+	var compressed bytes.Buffer
+	writer := zlib.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, cage.SharedClipboardHelper); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	// 移除载荷参数后，辅助脚本仍收到原有操作参数，stdin 也仍用于剪贴板协议。
+	const bootstrap = `import base64,sys,zlib; exec(compile(zlib.decompress(base64.b64decode(sys.argv.pop(1))), '<cage-shared-clipboard>', 'exec'))`
+	return "exec sudo -n /usr/bin/python3 -c " + shellescape.Quote(bootstrap) + " " +
+		base64.StdEncoding.EncodeToString(compressed.Bytes()), nil
+})
 
 type clipboardPayload struct {
 	Hello   *clipboardHello `json:"hello,omitempty"`
@@ -82,7 +101,10 @@ func (s *Server) clipboardCommand(ctx context.Context, operation string, selecti
 		}
 		return cmd, "guest", nil
 	}
-	command := "exec sudo -n /usr/bin/python3 -c " + shellescape.Quote(cage.SharedClipboardHelper)
+	command, err := linuxClipboardCommand()
+	if err != nil {
+		return nil, "", err
+	}
 	switch operation {
 	case "stream":
 	case "import":
@@ -233,8 +255,7 @@ func (s *Server) sharedClipboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { cancel(); s.mu.Lock(); s.clipboardCancel = nil; s.clipboardRelease = nil; s.mu.Unlock() }()
-	// Supply the current helper in stdin so an existing VM can use this fix
-	// without restarting the browser, Desktop, or rebuilding personal data.
+	// 以当前后端配套的辅助脚本启动连接，保留 stdin/stdout 传输剪贴板数据。
 	cmd, source, err := s.clipboardCommand(ctx, "stream", clipboardFileSelection{})
 	if err != nil {
 		http.Error(w, "剪贴板客机配置无效", 502)

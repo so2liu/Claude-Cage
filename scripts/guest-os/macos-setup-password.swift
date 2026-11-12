@@ -105,26 +105,63 @@ enum MacSetupPassword {
         return target
     }
 
-    private static func passwordFocused(_ app: NSRunningApplication, window: CGRect) -> Bool {
+    static func allowsPasswordProcess(hostBundle: String, hostPID: pid_t, fieldPID: pid_t,
+                                      fieldBundle: String, appleSigned: Bool) -> Bool {
+        guard hostPID > 0, fieldPID > 0,
+              ["com.apple.systempreferences", "com.apple.authorizationhost"].contains(hostBundle) else { return false }
+        if fieldPID == hostPID { return true }
+        return hostBundle == "com.apple.systempreferences" && appleSigned &&
+            ["com.apple.settings.PrivacySecurity.extension", "com.apple.extensionkit.AppExtensionManagement"].contains(fieldBundle)
+    }
+
+    static func passwordFocused(_ app: NSRunningApplication, window: CGRect) -> Bool {
+        guard let bundle = app.bundleIdentifier, AXIsProcessTrusted(),
+              ["com.apple.systempreferences", "com.apple.authorizationhost"].contains(bundle), signed(app, bundle: bundle) else { return false }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(application, 0.25)
         func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
             var value: CFTypeRef?
             return AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success ? value : nil
         }
+        func bounds(_ element: AXUIElement) -> CGRect? {
+            var origin = CGPoint.zero, size = CGSize.zero
+            guard let position = attribute(element, kAXPositionAttribute), let extent = attribute(element, kAXSizeAttribute),
+                  CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(extent) == AXValueGetTypeID(),
+                  AXValueGetValue(position as! AXValue, .cgPoint, &origin), AXValueGetValue(extent as! AXValue, .cgSize, &size),
+                  [origin.x, origin.y, size.width, size.height].allSatisfy({ $0.isFinite }), size.width > 0, size.height > 0 else { return nil }
+            return CGRect(origin: origin, size: size)
+        }
+        func ownsTarget(_ element: AXUIElement) -> Bool {
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier,
+                  let role = attribute(element, kAXRoleAttribute) as? String, [kAXSheetRole, kAXWindowRole].contains(role),
+                  let rect = bounds(element) else { return false }
+            return abs(rect.minX - window.minX) < 1 && abs(rect.minY - window.minY) < 1 &&
+                abs(rect.width - window.width) < 1 && abs(rect.height - window.height) < 1
+        }
         guard let value = attribute(application, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
         let field = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(field, 0.25)
         var pid: pid_t = 0
-        guard AXUIElementGetPid(field, &pid) == .success, pid == app.processIdentifier,
+        guard AXUIElementGetPid(field, &pid) == .success,
               attribute(field, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole,
               attribute(field, kAXEnabledAttribute) as? Bool == true,
-              let owner = attribute(field, kAXWindowAttribute), CFGetTypeID(owner) == AXUIElementGetTypeID() else { return false }
-        var origin = CGPoint.zero, size = CGSize.zero
-        guard let position = attribute(owner as! AXUIElement, kAXPositionAttribute), let extent = attribute(owner as! AXUIElement, kAXSizeAttribute),
-              CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(extent) == AXValueGetTypeID(),
-              AXValueGetValue(position as! AXValue, .cgPoint, &origin), AXValueGetValue(extent as! AXValue, .cgSize, &size) else { return false }
-        return abs(origin.x - window.minX) < 1 && abs(origin.y - window.minY) < 1 &&
-            abs(size.width - window.width) < 1 && abs(size.height - window.height) < 1
+              let fieldBounds = bounds(field), window.contains(fieldBounds) else { return false }
+        let owner = pid == app.processIdentifier ? app : NSRunningApplication(processIdentifier: pid)
+        let ownerBundle = owner?.bundleIdentifier ?? ""
+        guard allowsPasswordProcess(hostBundle: bundle, hostPID: app.processIdentifier, fieldPID: pid,
+                                    fieldBundle: ownerBundle, appleSigned: owner.map { signed($0, bundle: ownerBundle) } ?? false) else { return false }
+        // System Settings embeds Apple settings extensions. Their secure field
+        // can omit AXWindow; AXParent links it to the host's authorization sheet.
+        if let raw = attribute(field, kAXWindowAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID(), ownsTarget(raw as! AXUIElement) { return true }
+        var ancestor = field
+        for _ in 0..<12 {
+            guard let raw = attribute(ancestor, kAXParentAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+            ancestor = raw as! AXUIElement
+            AXUIElementSetMessagingTimeout(ancestor, 0.25)
+            if ownsTarget(ancestor) { return true }
+        }
+        return false
     }
 
     static func probe() throws -> [String: Any] {
@@ -174,6 +211,19 @@ enum MacSetupPassword {
             do { try validateRequest(Data(request.utf8)); throw Failure(1, "setup_password_test_request") }
             catch let error as Failure where error.message == "setup_password_probe_request_invalid" { }
         }
+        // System Settings may host a secure field in its signed Apple extension.
+        for extensionBundle in ["com.apple.settings.PrivacySecurity.extension", "com.apple.extensionkit.AppExtensionManagement"] {
+            guard allowsPasswordProcess(hostBundle: "com.apple.systempreferences", hostPID: 613, fieldPID: 731,
+                                        fieldBundle: extensionBundle, appleSigned: true),
+                  !allowsPasswordProcess(hostBundle: "com.apple.systempreferences", hostPID: 613, fieldPID: 731,
+                                         fieldBundle: extensionBundle, appleSigned: false) else { throw Failure(1, "setup_password_test_extension_signature") }
+        }
+        guard allowsPasswordProcess(hostBundle: "com.apple.authorizationhost", hostPID: 613, fieldPID: 613,
+                                    fieldBundle: "com.apple.authorizationhost", appleSigned: true),
+              !allowsPasswordProcess(hostBundle: "com.apple.systempreferences", hostPID: 613, fieldPID: 731,
+                                     fieldBundle: "com.apple.finder", appleSigned: true),
+              !allowsPasswordProcess(hostBundle: "com.apple.authorizationhost", hostPID: 613, fieldPID: 731,
+                                     fieldBundle: "com.apple.settings.PrivacySecurity.extension", appleSigned: true) else { throw Failure(1, "setup_password_test_process_binding") }
         let display = CGRect(x: 0, y: 0, width: 1920, height: 1200)
         let parent = Window(id: 38, pid: 2338, bounds: CGRect(x: 598, y: 258, width: 723, height: 625), layer: 0)
         let panel = Window(id: 49, pid: 2338, bounds: CGRect(x: 830, y: 376, width: 260, height: 389), layer: 0)

@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,56 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBrowserVisibilityUsesGuestControllerAndIndependentDemand(t *testing.T) {
+	s := testServer(t)
+	s.ready = true
+	changes := make(chan bool, 4)
+	s.browserControl = browserClientForTest(t, s, browserTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/visibility" {
+			t.Errorf("unexpected browser visibility request: %s %s", r.Method, r.URL.Path)
+		}
+		var input struct {
+			Visible bool `json:"visible"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		changes <- input.Visible
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+	}))
+	desktop, err := s.desktopViews.acquire(func(bool) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer desktop()
+	first, err := s.browserViews.acquire(s.changeBrowserVisibility)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !<-changes {
+		t.Fatal("browser was not restored before viewing")
+	}
+	second, err := s.browserViews.acquire(s.changeBrowserVisibility)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first()
+	select {
+	case <-changes:
+		t.Fatal("one browser viewer hid another viewer's window")
+	case <-time.After(600 * time.Millisecond):
+	}
+	second()
+	select {
+	case visible := <-changes:
+		if visible {
+			t.Fatal("browser stayed visible without its viewers")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Desktop viewing prevented the browser from hiding")
+	}
+}
 
 func TestPhoneDesktopCloseReleasesOnlyPhoneDisplay(t *testing.T) {
 	s := testServer(t)
@@ -66,7 +117,7 @@ func TestPhoneDesktopCloseReleasesOnlyPhoneDisplay(t *testing.T) {
 }
 
 func TestDesktopViewsKeepAnotherViewerVisible(t *testing.T) {
-	var demand desktopViewDemand
+	var demand displayViewDemand
 	changes := make(chan bool, 4)
 	update := func(show bool) error { changes <- show; return nil }
 	first, err := demand.acquire(update)
@@ -99,7 +150,7 @@ func TestDesktopViewsKeepAnotherViewerVisible(t *testing.T) {
 }
 
 func TestDesktopNewViewerWaitsForPendingHide(t *testing.T) {
-	var demand desktopViewDemand
+	var demand displayViewDemand
 	hiding, finishHide := make(chan struct{}), make(chan struct{})
 	cleanup := make(chan struct{})
 	hides := 0
@@ -136,7 +187,7 @@ func TestDesktopNewViewerWaitsForPendingHide(t *testing.T) {
 }
 
 func TestDesktopFailedRestoreReleasesItsViewer(t *testing.T) {
-	var demand desktopViewDemand
+	var demand displayViewDemand
 	if _, err := demand.acquire(func(bool) error { return errors.New("guest unavailable") }); err == nil {
 		t.Fatal("failed restore accepted")
 	}

@@ -3,6 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ $(id -u) != 0 ]] || { echo 'Run as an ordinary user in a disposable Ubuntu container.' >&2; exit 2; }
 source internal/cage/tool-versions.env
+# The installed guest embeds this same Python program in its shell prelude.
+downloader="$PWD/internal/cage/tool-download.py"
+cage_curl_download() { python3 "$downloader" "$@"; }
 source internal/cage/guest-tools.sh
 source internal/cage/ubuntu-browser.sh
 cage_is_ubuntu || { echo 'This test requires Ubuntu.' >&2; exit 2; }

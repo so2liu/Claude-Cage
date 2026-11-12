@@ -199,9 +199,14 @@ try {
         Publish-ReadyBinding
         return
     }
-    if (!$GuestAdministrator) { $GuestAdministrator=Get-Credential -Message 'Cage: enter an administrator account of the selected virtual Windows machine.' }
+    if (!$GuestAdministrator) {
+        Write-Output 'CAGE_GUEST_STAGE windows-11 credentials'
+        $GuestAdministrator=Get-Credential -Message '先在虚拟机连接窗口完成 Windows 设置并登录桌面，再输入客机管理员账户。新建 ISO 安装请使用安装前设置的本地账户。请保持此 PowerShell 安装窗口开启。'
+    } else { Write-Output 'CAGE_GUEST_STAGE windows-11 services' }
     if (!$GuestAdministrator) { throw 'Windows guest setup canceled.' }
     $session=New-PSSession -VMId $VMId -Credential $GuestAdministrator
+    if ($choice.source.host.system -cne 'windows-11') { Remove-CageISOAnswer $vm $session $instance }
+    Write-Output 'CAGE_GUEST_STAGE windows-11 services'
     $target=Invoke-Command -Session $session -FilePath (Join-Path $PSScriptRoot 'initialize-windows-workbench-user.ps1') -ArgumentList $VMId
     $firstBoot=Join-Path $pairDirectory 'first-account-boot'
     if (!$target.AlreadySignedIn -and (Test-Path -LiteralPath $firstBoot) -and [IO.File]::ReadAllText($firstBoot) -ne $target.BootID) {
@@ -217,11 +222,14 @@ try {
     $null=Get-LocalDirectory $cache
     $packages=Get-Content -LiteralPath (Join-Path $payload 'windows-workbench-packages.json') -Raw | ConvertFrom-Json
     $cli=Get-Content -LiteralPath (Join-Path $payload 'cli-dependencies.json') -Raw | ConvertFrom-Json
+    Resolve-ClaudePackages $packages $cli $cache
     $files=@{}
+    Write-Output 'CAGE_GUEST_STAGE windows-11 media'
     foreach ($spec in @($packages.PSObject.Properties)+@($cli.PSObject.Properties)) {
         $files[$spec.Name]=Get-PinnedPackage $spec.Value $cache
     }
 
+    Write-Output 'CAGE_GUEST_STAGE windows-11 tools'
     $scratch=Join-Path $workRoot ('stage-'+[guid]::NewGuid())
     $null=New-Item -ItemType Directory $scratch
     $core=Join-Path $scratch 'core'
@@ -244,7 +252,7 @@ try {
 
     $extras=Join-Path $scratch 'extras'
     $null=New-Item -ItemType Directory $extras
-    foreach ($name in @('modules','split-extension','windows-browser.mjs','windows-browser-extensions.mjs','windows-phone-browser.mjs','install-windows-workbench-user-tools.ps1','install-cli.ps1','cli-dependencies.json')) {
+    foreach ($name in @('modules','split-extension','windows-browser.mjs','windows-browser-extensions.mjs','windows-phone-browser.mjs','install-windows-workbench-user-tools.ps1','install-cli.ps1','cli-dependencies.json','claude-desktop-windows.ps1')) {
         Copy-Item -LiteralPath (Join-Path $payload $name) -Destination $extras -Recurse
     }
     if ($componentManifest) {
@@ -278,7 +286,7 @@ try {
         else { $null=New-Item -ItemType Directory $path }
         $path
     }
-    foreach ($file in @($zipPath,$files.desktop,$files.winfsp,$files.sshfs,$files.uv,$files.python,$files.claude,$files.git)) {
+    foreach ($file in @($zipPath,$files.desktop,$files.winfsp,$files.sshfs,$files.uv,$files.python,$files.claude,$files.git,$files.gh)) {
         Copy-Item -LiteralPath $file -Destination $guestStage -ToSession $session -Force
     }
     $installer=Join-Path $PSScriptRoot 'install-windows-workbench-components.ps1'
@@ -314,6 +322,7 @@ try {
     }
 
     [IO.File]::WriteAllText($completionMarker,$target.SID)
+    Write-Output 'CAGE_GUEST_STAGE windows-11 services'
     Publish-ReadyBinding
 } finally {
     if ($session) { Remove-PSSession $session }

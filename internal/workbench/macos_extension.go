@@ -25,7 +25,7 @@ func (s *Server) checkMacOSSetupProjects(parent context.Context) error {
 	}
 	s.mu.Unlock()
 	if err != nil {
-		return errors.New("尚未能挂载并卸载只读测试卷。请在客机设置中启用 macFUSE 和 macFUSE (local)，再点验证")
+		return errors.New("文件共享权限尚未通过。请点击「文件系统扩展」重新打开授权面板，确认 macFUSE 和 macFUSE (local) 两个开关均已打开，Cage 会自动检查")
 	}
 	return nil
 }

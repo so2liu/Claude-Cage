@@ -65,7 +65,43 @@ try {
     $rejected = $false
     try { Assert-WindowsWorkbenchReport -ExitCode 17 -Report $report } catch { $rejected = $true }
     Assert-SmokeContract $rejected 'Nonzero child exit was accepted because its report said success.'
-    Write-Output 'PASS: RUNNER_TEMP/local selection, real failed child with existing diagnostic, safe evidence logging, and success/exit contract.'
+    $app = Join-Path $directory 'app'
+    New-Item -ItemType Directory -Path (Join-Path $app 'resources') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $app 'Cage.exe'), 'native fixture')
+    $image = Join-Path $app 'resources/cage.exe'
+    [IO.File]::WriteAllText($image, 'backend fixture')
+    $ready = Join-Path $directory 'image-locked'
+    $released = Join-Path $directory 'image-released'
+    $lockScript = Join-Path $directory 'lock-image.ps1'
+    [IO.File]::WriteAllText($lockScript, @'
+$handle = [IO.File]::Open($args[0], [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    [IO.File]::WriteAllText($args[1], 'ready')
+    Start-Sleep -Milliseconds 800
+} finally {
+    [IO.File]::WriteAllText($args[2], 'released')
+    $handle.Dispose()
+}
+'@)
+    $start = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+    $start.UseShellExecute = $false
+    foreach ($argument in @('-NoProfile','-NonInteractive','-File',$lockScript,$image,$ready,$released)) { $start.ArgumentList.Add($argument) }
+    $child = [Diagnostics.Process]::Start($start)
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $ready)) {
+            if ($child.HasExited -or [DateTime]::UtcNow -ge $deadline) { throw 'Image lock fixture did not start.' }
+            Start-Sleep -Milliseconds 20
+        }
+        Wait-WindowsWorkbenchFiles -AppDirectory $app
+        Assert-SmokeContract (Test-Path -LiteralPath $released) 'Smoke returned while a child still held its executable image.'
+        $child.WaitForExit()
+        Assert-SmokeContract ($child.ExitCode -eq 0) 'Image lock fixture failed.'
+    } finally {
+        if (-not $child.HasExited) { $child.Kill($true); $child.WaitForExit() }
+        $child.Dispose()
+    }
+    Write-Output 'PASS: isolated temp, safe smoke diagnostics, exit status and executable release.'
 } finally {
     $env:RUNNER_TEMP = $savedRunnerTemp
     Remove-Item -LiteralPath $directory -Recurse

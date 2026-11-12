@@ -29,6 +29,12 @@ type windowsBrowserClient struct {
 	output      *bufio.Scanner
 }
 
+// Keep the guest's structured failure code: the display can distinguish a
+// rejected input from a broken or untrusted frame transport.
+type windowsBrowserFailure struct{ code, message string }
+
+func (e windowsBrowserFailure) Error() string { return e.message }
+
 func newWindowsBrowserClient(parent context.Context, profile string) *windowsBrowserClient {
 	ctx, cancel := context.WithCancel(parent)
 	return &windowsBrowserClient{ctx: ctx, cancel: cancel, start: func(ctx context.Context) (*exec.Cmd, error) {
@@ -165,6 +171,12 @@ func (c *windowsBrowserClient) close() {
 	c.disconnectLocked()
 }
 
+func (c *windowsBrowserClient) releaseViewerInput() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disconnectLocked()
+}
+
 func (c *windowsBrowserClient) request(ctx context.Context, method, path string, input any) ([]byte, error) {
 	if !validWindowsBrowserRoute(method, path) {
 		return nil, browserInputError{errors.New("客机浏览器操作无效")}
@@ -281,6 +293,10 @@ func (c *windowsBrowserClient) request(ctx context.Context, method, path string,
 			"target_changed":              "接收操作的网页已经切换，请回到原网页重试",
 			"browser_target_changed":      "客机浏览器窗口已变化，请在新画面中重试",
 			"browser_focus_required":      "客机浏览器未能获得前台焦点，请先激活浏览器或关闭阻挡操作的弹窗",
+			"desktop_target_changed":      "弹窗正在切换，正在重新读取画面",
+			"desktop_capture_busy":        "弹窗画面正在准备",
+			"desktop_empty_frame":         "弹窗尚未返回画面",
+			"frame_unavailable":           "浏览器画面流尚未就绪",
 			"transfer_changed":            "文件传递已经关闭，请重新选择文件",
 			"frame_limit":                 "浏览器画面过大，请缩小窗口后重试",
 		}
@@ -292,7 +308,7 @@ func (c *windowsBrowserClient) request(ctx context.Context, method, path string,
 			diagnostics.Log("warn", "native-browser", method+" "+path+" failed ("+code+")")
 		}
 		if reason := known[code]; reason != "" {
-			return nil, errors.New(reason)
+			return nil, windowsBrowserFailure{code: code, message: reason}
 		}
 		return nil, errors.New("客机浏览器操作未完成，请恢复连接后核对结果")
 	}

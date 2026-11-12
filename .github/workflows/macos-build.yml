@@ -68,10 +68,13 @@ jobs:
         run: |
           npm run --prefix ui lint
           npm test --prefix ui
-          node --test internal/cage/clipboard.test.cjs internal/cage/browser-audit.test.mjs internal/cage/browser-downloads.test.mjs internal/cage/browser-uploads.test.mjs internal/cage/browser-login.test.mjs internal/cage/browser-clipboard.test.mjs
+          node --test internal/cage/clipboard.test.cjs internal/cage/browser-audit.test.mjs internal/cage/browser-downloads.test.mjs internal/cage/browser-uploads.test.mjs internal/cage/browser-login.test.mjs internal/cage/browser-clipboard.test.mjs internal/cage/native-input.test.mjs internal/cage/display-density.test.mjs
           uv run internal/cage/claude-account.test.py
+          uv run internal/cage/display-governor.test.py
           uv run internal/cage/save-download.test.py
           uv run internal/cage/editor-migrate.test.py
+          uv run --no-project scripts/guest-os/tests/native-maintenance.py
+          uv run --no-project scripts/guest-os/tests/macos-release-downloads.py
       - name: Go tests and vet
         run: |
           make test-go

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,34 @@ import (
 
 	"github.com/miekg/dns"
 )
+
+func TestProxyHandshakeTimeoutPreservesDeadline(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}))
+	defer proxy.Close()
+	cfg := DefaultConfig()
+	cfg.ProxyURL = proxy.URL
+	e, err := NewEgress(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	conn, err := e.DialContext(ctx, "tcp", "8.8.8.8:443")
+	if conn != nil {
+		conn.Close()
+		t.Fatal("stalled CONNECT succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "CONNECT") || !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("CONNECT timeout lost its cause or stage: %v", err)
+	}
+}
 
 // This proxy records CONNECT targets and transports actual bytes. It does not
 // use the application's dialer, so wrong wiring cannot pass unnoticed.

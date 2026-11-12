@@ -2,8 +2,28 @@ package guestos
 
 import (
 	"errors"
+	"fmt"
+	"syscall"
+
 	"github.com/google/uuid"
 )
+
+// WindowsHostEnrollmentPipeError exposes only a fixed operation and an OS code.
+// The underlying PathError can contain the private pipe name.
+type WindowsHostEnrollmentPipeError struct {
+	Operation string
+	Win32     syscall.Errno
+}
+
+func (err *WindowsHostEnrollmentPipeError) Error() string {
+	return fmt.Sprintf("enrollment_pipe_%s_failed (win32=%d)", err.Operation, err.Win32)
+}
+
+func enrollmentPipeError(operation string, err error) error {
+	var code syscall.Errno
+	errors.As(err, &code)
+	return &WindowsHostEnrollmentPipeError{Operation: operation, Win32: code}
+}
 
 // Options are captured by the original, unprivileged setup process. A pipe
 // client cannot replace these paths, identities, or installation choices.

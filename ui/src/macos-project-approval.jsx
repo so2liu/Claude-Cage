@@ -10,11 +10,55 @@ const permissionMessages = {
   requires_gui_login: "请先登录并解锁虚拟 Mac 的普通账户，然后重新打开项目。",
 };
 
+export function InitializationProjectApproval({ workspace, jobRunning, onClose, onApproved = onClose }) {
+  const [pending, setPending] = useState(null);
+  const [error, setError] = useState("");
+  const [requesting, setRequesting] = useState(false);
+  const approved = useRef(onApproved);
+  approved.current = onApproved;
+
+  useEffect(() => {
+    if (jobRunning || pending || error) return;
+    let live = true, timer;
+    async function open() {
+      setRequesting(true);
+      try {
+        const result = await api("/projects/open", { workspace, add: false, activate: false });
+        if (!live) return;
+        if (result.approval) setPending({ workspace: result.workspace, grant: result.approval });
+        else approved.current();
+      } catch (e) {
+        if (!live) return;
+        if (e.recovery === "project-operation-busy") timer = setTimeout(open, 1200);
+        else setError(e.message);
+      } finally {
+        if (live) setRequesting(false);
+      }
+    }
+    open();
+    return () => { live = false; clearTimeout(timer); setRequesting(false); };
+  }, [workspace, jobRunning, pending, error]);
+
+  if (pending) return <MacOSProjectApproval pending={pending} onClose={onClose} onCheck={async () => {
+    const result = await api("/projects/open", { workspace, add: false, activate: false });
+    if (result.approval) setPending({ workspace: result.workspace, grant: result.approval });
+    else onApproved();
+  }} />;
+  return <Modal title="允许客机访问所选项目" onClose={requesting ? undefined : onClose} footer={<>
+    <button disabled={requesting} onClick={onClose}>取消</button>
+    {error && <button onClick={() => setError("")}>重新请求授权</button>}
+  </>}>
+    <p className="macos-approval-path">{workspace}</p>
+    {error ? <p role="alert">{error}</p> : <p role="status">{jobRunning ? "当前客机操作结束后，会显示项目授权窗口。" : "正在连接客机的项目授权窗口…"}</p>}
+  </Modal>;
+}
+
 export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) {
   const [frame, setFrame] = useState(null),
     [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [ended, setEnded] = useState(false);
   const [maintenance, setMaintenance] = useState("");
   const active = useRef(false),
     inFlight = useRef(null);
@@ -56,6 +100,10 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
           if (live && !active.current) {
             setFrame(null);
             setNotice(e.message);
+            if (e.recovery === "project-approval-ended") {
+              setEnded(true);
+              return;
+            }
           }
         } finally {
           inFlight.current = null;
@@ -64,6 +112,9 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
       if (live) timer = setTimeout(poll, 650);
     }
     setFrame(null);
+    setEnded(false);
+    setMaintenance("");
+    setNotice("");
     setActionError("");
     poll();
     return () => {
@@ -82,6 +133,7 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
       await fn();
     } catch (e) {
       setFrame(null);
+      if (e.recovery === "project-approval-ended") setEnded(true);
       setActionError(e.message);
     } finally {
       active.current = false;
@@ -90,7 +142,11 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
   }
   const cancel = () =>
     act(async () => {
-      await call("cancel");
+      try {
+        await call("cancel");
+      } catch (error) {
+        if (error.recovery !== "project-approval-ended") throw error;
+      }
       onClose();
     });
   const click = (event) => {
@@ -123,7 +179,7 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
             取消
           </button>
           <button disabled={busy} onClick={() => act(onCheck)}>
-            验证授权
+            {ended ? "重新请求授权" : "验证授权"}
           </button>
         </>
       }
@@ -140,7 +196,7 @@ export function MacOSProjectApproval({ pending, onCheck, onClose, onSettings }) 
         />
       )}
       {notice && <p role="status">{notice}</p>}
-      {maintenance && <MacOSLogin maintenance={maintenance} onSettings={onSettings} onSessionClosed={() => void act(onCheck)} />}
+      {maintenance && !ended && <MacOSLogin maintenance={maintenance} onSettings={onSettings} onSessionClosed={() => void act(onCheck)} />}
       {actionError && <p role="alert">{actionError}</p>}
     </Modal>
   );

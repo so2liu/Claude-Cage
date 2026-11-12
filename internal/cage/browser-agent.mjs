@@ -13,7 +13,9 @@ import { PrivateBrowser } from "./browser-private.mjs";
 import { browserCookies } from "./browser-cookies.mjs";
 import { BrowserExtensions, extensionUploadLimit } from "./browser-extensions.mjs";
 import { BrowserClipboard } from "./browser-clipboard.mjs";
+import { BrowserVisibility } from "./browser-visibility.mjs";
 import { nativeInput } from "./native-input.mjs";
+import { createDisplaySettings, displayDensity } from "./display-density.mjs";
 import { DownloadManager } from "./browser-downloads.mjs";
 import { UploadManager, uploadLimit } from "./browser-uploads.mjs";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -22,6 +24,9 @@ const config = JSON.parse(
   readFileSync("/etc/claude-cage/browser-control.json", "utf8"),
 );
 const displayScale = config.display_scale === 1.5 ? 1.5 : 2;
+// Started before Chromium, which then opens at this density.
+const displaySettings = createDisplaySettings({ file: "/home/cage-browser/.cache/cage-display/xsettings.conf", initial: displayScale });
+process.on("exit", () => displaySettings.close());
 const selectionFile = "/home/cage-browser/workbench-state.json";
 const homepageFile = "/home/cage-browser/homepage.json";
 let homeURL = "https://www.bing.com/";
@@ -44,7 +49,6 @@ function rememberSelection() {
 const downloadPath = "/home/cage-browser/Downloads";
 mkdirSync(downloadPath, { recursive: true });
 const splitDirectory = "/usr/local/lib/cage-split";
-const browserIdentity = readFileSync(`${splitDirectory}/browser-identity.js`, "utf8");
 const extensionId = createHash("sha256").update(splitDirectory).digest("hex").slice(0, 32)
   .replace(/./g, c => String.fromCharCode(97 + parseInt(c, 16)));
 const splitURL = `chrome-extension://${extensionId}/control.html`;
@@ -66,6 +70,9 @@ const flags = [
   `--load-extension=${splitDirectory}`,
   "--user-data-dir=/home/cage-browser/profile",
   "--remote-debugging-pipe",
+  // The pipe carries user interaction. Set this before any document is created
+  // so normal pages, login popups and private contexts share the native getter.
+  "--disable-blink-features=AutomationControlled",
   // Kiosk mode blocks Chromium's DevTools UI, including F12. Ordinary
   // fullscreen keeps the guest browser chrome hidden while allowing inspection.
   "--start-fullscreen",
@@ -75,7 +82,7 @@ const flags = [
   "--disable-quic",
   "--disable-session-crashed-bubble",
   "--window-size=1440,900",
-  `--force-device-scale-factor=${displayScale}`,
+  ...(displaySettings.available ? [] : [`--force-device-scale-factor=${displayScale}`]),
   `--lang=${process.env.CAGE_LANGUAGE || "en-US"}`,
   `--accept-lang=${process.env.CAGE_LANGUAGE || "en-US"}`,
 ];
@@ -101,14 +108,31 @@ const pending = new Map(),
   targets = new Map(),
   sessions = new Map();
 const closingTargets = new Map();
-// Cross-process frames must be prepared before their first website script.
-// Reuse clipboard's frame discovery without giving it identity-policy state.
-function clipboardCDP(method, params, ...args) {
-  if (method === "Target.setAutoAttach")
-    params = { ...params, waitForDebuggerOnStart: true };
-  return cdp(method, params, ...args);
+let browserVNCViewers = false;
+function canHideBrowser() {
+  // Legacy viewers connect directly to the loopback VNC server. Keep their
+  // window visible after the last managed workbench viewer disconnects.
+  for (const file of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    const entries = readFileSync(file, "utf8").trim().split("\n").slice(1);
+    if (entries.some(line => {
+      const fields = line.trim().split(/\s+/);
+      return fields[3] === "01" && fields[1].endsWith(":3E1C");
+    })) { browserVNCViewers = true; return false; }
+  }
+  browserVNCViewers = false;
+  return true;
 }
-const browserClipboard = new BrowserClipboard(clipboardCDP, ({ id, text, context }) => {
+const visibility = new BrowserVisibility(cdp, () => [...targets.keys()], canHideBrowser);
+let checkingBrowserViewers = false;
+setInterval(() => {
+  if (!ready || visibility.visible || checkingBrowserViewers) return;
+  const previous = browserVNCViewers;
+  try { canHideBrowser(); } catch { return; }
+  if (previous === browserVNCViewers) return;
+  checkingBrowserViewers = true;
+  void visibility.set(false).catch(() => {}).finally(() => { checkingBrowserViewers = false; });
+}, 1000).unref();
+const browserClipboard = new BrowserClipboard(cdp, ({ id, text, context }) => {
   if (id !== activeId || !targets.has(id)) return;
   const payload = "event: clipboard\ndata: " + JSON.stringify({ id, text, context }) + "\n\n";
   for (const stream of events) stream.write(payload);
@@ -161,6 +185,8 @@ function updateTargetInfo(t) {
   if (!activeId) activeId = t.targetId;
   if (ready && fresh && t.openerId)
     void activate(t.targetId, true).catch(() => {});
+  else if (ready && fresh && !visibility.visible)
+    void visibility.set(false).catch(() => {});
 }
 
 async function auditCDP(method, params, ...args) {
@@ -208,16 +234,6 @@ chrome.stdio[4].on("data", (chunk) => {
     }
     vault.event(event);
     const p = event.params || {};
-    if (event.method === "Target.attachedToTarget" && ["page", "iframe"].includes(p.targetInfo?.type) && p.waitingForDebugger) {
-      void (async () => {
-        try {
-          await cdp("Page.enable", {}, p.sessionId);
-          await cdp("Page.addScriptToEvaluateOnNewDocument", { source: browserIdentity, runImmediately: true }, p.sessionId);
-        } finally {
-          await cdp("Runtime.runIfWaitingForDebugger", {}, p.sessionId).catch(() => {});
-        }
-      })().catch(() => {});
-    }
     browserClipboard.event(event);
     if (event.sessionId === splitSession && event.method === "Runtime.bindingCalled" &&
         p.name === "cageFaviconChanged") refreshFavicon(p.payload);
@@ -316,10 +332,6 @@ async function session(id) {
       cdp("Target.attachToTarget", { targetId: id, flatten: true }).then(async (r) => {
         uploadSessions.set(r.sessionId, id);
         await cdp("Page.enable", {}, r.sessionId);
-        // Off-the-record contexts do not load the profile's extensions. Keep
-        // the same page identity there and on already-restored documents.
-        await cdp("Page.addScriptToEvaluateOnNewDocument", { source: browserIdentity }, r.sessionId);
-        await cdp("Runtime.evaluate", { expression: browserIdentity }, r.sessionId);
         await cdp("Page.setInterceptFileChooserDialog", { enabled: true }, r.sessionId);
         await browserClipboard.attach(r.sessionId, id).then(result => {
           if (result?.skipped.length) console.warn("Browser copy observer skipped a modified or replaced document; reload the page to enable copy buttons.");
@@ -453,19 +465,12 @@ async function activate(id, focus = false) {
   if (!targets.has(id)) throw new Error("Tab no longer exists");
   // Restored background tabs may have no live renderer until activated.
   // Page.enable must not block the command that wakes that renderer.
-  await cdp("Target.activateTarget", { targetId: id });
+  await visibility.activate(id);
   await session(id);
   activeId = id;
   void refreshNavigation();
   rememberSelection();
   broadcastState(focus);
-  const { windowId } = await cdp("Browser.getWindowForTarget", {
-    targetId: id,
-  });
-  await cdp("Browser.setWindowBounds", {
-    windowId,
-    bounds: { windowState: "fullscreen" },
-  }).catch(() => {});
 }
 function checkedURL(value) {
   if (value === "about:blank") return value;
@@ -639,18 +644,26 @@ setInterval(() => {
   for (const stream of events) stream.write(": heartbeat\n\n");
 }, 10000).unref();
 let displaySize = "";
-async function resizeDisplay(width, height) {
+async function resizeDisplay(width, height, density) {
+  // A viewer that names no density sized its display for the configured one.
+  const scale = density === undefined || !displaySettings.available ? displayScale : displayDensity(density);
   if (
+    scale === null ||
     !Number.isInteger(width) ||
     !Number.isInteger(height) ||
-    width < 160 * displayScale ||
-    height < 240 * displayScale ||
+    width < 160 * scale ||
+    height < 240 * scale ||
     width > 8192 ||
     height > 8192
   )
     throw new Error("Invalid display size");
+  const result = { ok: true, ...(displaySettings.available ? { scale: displaySettings.set(scale) } : {}) };
   const name = `cage-${width}x${height}`;
-  if (displaySize === name) return { ok: true };
+  if (displaySize === name) {
+    // A viewer attaching at an unchanged size still restores the full rate.
+    await runFile("/usr/bin/xrandr", ["--output", "VNC-0", "--mode", name]).catch(() => {});
+    return result;
+  }
   const { stdout } = await runFile("/usr/bin/xrandr", ["--query"]);
   if (!stdout.includes(name)) {
     const rate = (((width + 32) * (height + 8) * 60) / 1000000).toFixed(3);
@@ -680,7 +693,7 @@ async function resizeDisplay(width, height) {
       );
       await runFile("/usr/bin/xrandr", ["--rmmode", old[1]]).catch(() => {});
     }
-  return { ok: true };
+  return result;
 }
 let mutations = Promise.resolve();
 function mutate(fn) {
@@ -877,8 +890,12 @@ const server = http.createServer(async (req, res) => {
         if (!url) throw new Error("内部页面无效");
         return { ...await newTab(url), url, kind: "web", title: "浏览器设置" };
       }
+      if (req.url === "/visibility") {
+        await visibility.set(input.visible);
+        return { ok: true };
+      }
       if (req.url === "/resize")
-        return resizeDisplay(input.width, input.height);
+        return resizeDisplay(input.width, input.height, input.scale);
       if (req.url === "/new") return newTab(input.url || undefined, input.incognito === true);
       if (req.url === "/editor") return editor(input.workspace || config.workspace);
       if (req.url === "/editor-restart") return restartEditor(input.workspace);
@@ -978,9 +995,6 @@ server.listen(18500, "127.0.0.1");
   // A cold guest can spend several seconds initializing the sandbox and fonts.
   // Keep ordinary commands bounded separately from this initial handshake.
   await cdp("Browser.getVersion", {}, undefined, 30000);
-  // Website-created popups can run scripts before Cage activates them.
-  await cdp("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true,
-    flatten: true, filter: [{ type: "page" }, { exclude: true }] });
   await cdp("Target.setDiscoverTargets", { discover: true });
   const { targetInfos } = await cdp("Target.getTargets");
   for (const t of targetInfos)

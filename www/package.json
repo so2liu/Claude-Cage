@@ -1,7 +1,7 @@
 {
   "name": "claude-cage-website",
   "type": "module",
-  "version": "0.1.7-rc.1",
+  "version": "0.1.7",
   "private": true,
   "description": "Claude Cage project website and macOS, Windows and Linux downloads",
   "license": "MIT",

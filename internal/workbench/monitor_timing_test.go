@@ -73,6 +73,68 @@ func TestNetworkMonitorRecordsRepeatedLockSkips(t *testing.T) {
 	}
 }
 
+func TestSafetyMonitorRunsWhileOperationLockIsHeld(t *testing.T) {
+	s := testServer(t)
+	s.ready = true
+	s.safety.VerifiedAt = time.Now()
+	s.op.Lock()
+	s.startMonitors()
+	deadline := time.Now().Add(2 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(s.profile, "logs", "events.jsonl")); err == nil {
+			for _, record := range monitorTimingRecords(t, s, "safety") {
+				found = found || record["result"] == "not_due"
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.op.Unlock()
+	s.closeBackground()
+	if !found {
+		t.Fatal("safety monitoring was blocked by an unrelated operation")
+	}
+}
+
+func TestConcurrentSafetyMonitorKeepsManualPause(t *testing.T) {
+	s, gate := grantedToolUpdateServer(t)
+	s.setJobForTest(Job{})
+	s.safety.VerifiedAt = time.Now().Add(-time.Minute)
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		s.monitorSafetyWithProbe(func(ctx context.Context, _ cage.Config) (string, error) {
+			close(started)
+			<-ctx.Done()
+			return "", ctx.Err()
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("monitor did not start")
+	}
+	s.monitorSafetyWithProbe(func(context.Context, cage.Config) (string, error) {
+		t.Error("overlapping monitor started a second probe")
+		return "", nil
+	})
+	if err := s.pauseNetworkNow("user pause"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("paused monitor did not stop")
+	}
+	if gate.Status().Mode != cage.GateClosed {
+		t.Fatal("monitor reopened networking after manual pause")
+	}
+}
+
 func TestMonitorTimingAttributesSlowProbe(t *testing.T) {
 	s, gate := grantedToolUpdateServer(t)
 	s.setJobForTest(Job{})

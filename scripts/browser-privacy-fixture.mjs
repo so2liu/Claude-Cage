@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export async function createPrivacyController({ preferences } = {}) {
+export async function createPrivacyController({ preferences, headless = true } = {}) {
   const browserPath = process.env.CAGE_PRIVACY_BROWSER_PATH || process.env.CAGE_TEST_BROWSER_PATH;
   assert.ok(browserPath, 'Set CAGE_PRIVACY_BROWSER_PATH or CAGE_TEST_BROWSER_PATH to Chromium');
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'cage-browser-privacy-')));
@@ -25,7 +25,7 @@ export async function createPrivacyController({ preferences } = {}) {
       return;
     }
     res.setHeader('Content-Type', 'text/html');
-    res.end('<!doctype html><script>globalThis.webdriverAtLoad = navigator.webdriver; if (parent !== self) parent.postMessage({fixtureIdentity: navigator.webdriver}, "*")</script><title>Privacy fixture</title><form><input autocomplete="username"><input type="password" autocomplete="current-password"><button>Sign in</button></form>');
+    res.end('<!doctype html><script>globalThis.webdriverAtLoad = navigator.webdriver; if (parent !== self) parent.postMessage({fixtureIdentity: navigator.webdriver, fixtureGetter: Object.getOwnPropertyDescriptor(Navigator.prototype, "webdriver").get.toString()}, "*")</script><title>Privacy fixture</title><form><input autocomplete="username"><input type="password" autocomplete="current-password"><button>Sign in</button></form>');
   });
   await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
   const origin = `http://localhost:${site.address().port}`;
@@ -82,7 +82,7 @@ export async function createPrivacyController({ preferences } = {}) {
       .replace('/etc/claude-cage/browser-control.json', join(directory, 'control.json'))
       .replace('/usr/local/lib/cage-split', join(directory, 'extension'))
       .replace('spawn("/usr/bin/chromium", flags', `spawn(${JSON.stringify(browserPath)}, flags`)
-      .replace('"--start-fullscreen",', '"--headless=new", "--disable-background-networking",')
+      .replace('"--start-fullscreen",', headless ? '"--headless=new", "--disable-background-networking",' : '"--start-fullscreen", "--disable-background-networking",')
       .replace('server.listen(18500, "127.0.0.1");', 'server.listen(0,"127.0.0.1",()=>console.log("PORT="+server.address().port));')
       .replace(marker, `${marker}\nif(req.url === "/__privacy-test") { res.end(JSON.stringify(await cdp(input.method, input.params || {}, input.id ? await session(input.id) : input.sessionId))); return; }`);
     await writeFile(join(directory, 'browser-agent.mjs'), adapted);

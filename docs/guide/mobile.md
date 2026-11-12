@@ -7,11 +7,30 @@ keywords: 移动端 手机 Android iOS iPhone 扫码 二维码 配对码 审批 
 ---
 ## 获取客户端与使用条件
 
-在 Android 或 iPhone 安装 Cage 手机客户端，再与电脑配对。Android 需要 8.0 及更新的 arm64 设备和现代 System WebView；iPhone 需要 iOS 17+ 与 Secure Enclave。手机与电脑应使用匹配版本；桌面的 DMG、EXE 和 DEB 用于电脑，不能在手机安装。
+在 Android 或 iPhone 安装 Cage 手机客户端，再与电脑配对。Android 需要 8.0 及更新的 arm64 设备和现代 System WebView；iPhone 需要 iOS 17+ 与 Secure Enclave。手机与电脑应使用匹配版本。
+
+Android 用户在[官网下载入口](https://lee-xeo.github.io/Claude-Cage/#download)选择 Android，下载 APK 后按系统提示允许该下载来源安装应用。后续使用同一签名的新版 APK 覆盖安装，保留手机上的配对记录。
+
+iOS 用户在自己的 Mac 上构建并为设备签名，步骤见下文。
 
 电脑需运行 Cage、解锁账户并准备好环境。手机负责连接与显示，Claude Code、网络出口、时区和语言由配对电脑上的 Cage 管理。电脑离线或停止环境后，手机无法继续在该环境运行任务。
 
 桌面通过 SSH 切到服务器时，手机接口仍指向原电脑的本机 Cage。请切回本机工作台管理手机配对。
+
+## iOS 本地构建
+
+1. 在 Mac 安装完整 Xcode 和 iOS SDK，首次打开 Xcode 完成组件安装。准备 Node.js 24 与 Go，Go 版本遵循仓库中的 `go.mod`。
+2. 下载 [Cage 源码](https://github.com/Lee-xeo/Claude-Cage)，在仓库根目录执行以下命令，生成手机界面、原生连接库和 iOS 应用。
+
+   ```sh
+   npm ci --prefix ui
+   bash mobile/build.sh ios
+   open mobile/ios/CageMobile.xcodeproj
+   ```
+
+3. 在 Xcode 选择 `CageMobile` scheme，在 Signing & Capabilities 中选择自己的开发团队，连接 iPhone 并选择该设备，再点击 Run。按设备提示信任开发签名并启用开发者模式。
+
+构建产物位于 `mobile/.build/ios/`，设备证书与签名由自己的 Apple 开发账户管理。安装后按照下文配对电脑。需要导出供本人设备安装的开发 IPA，可查看[移动端构建说明](https://github.com/Lee-xeo/Claude-Cage/blob/main/mobile/README.md#ios-本地构建)。
 
 <figure class="guide-shot">
   <a href="../../www/public/docs/screenshots/mobile-pairing.jpg" target="_blank" rel="noopener" aria-label="查看原图：电脑端的手机配对入口与中继选择"><img src="../../www/public/docs/screenshots/mobile-pairing.jpg" alt="电脑端的手机配对入口与中继选择" width="2560" height="1764" loading="lazy" decoding="async" /></a>

@@ -22,7 +22,7 @@ func nativeManifestKit(t *testing.T, system string) string {
 		}
 		data := []byte("#!fixture\n{}")
 		if name == "payload/cli-dependencies.json" {
-			data = []byte(`{"claude":{"version":"2.1.311"},"python":{"version":"3.13.18"},"git":{"version":"2.56.0"}}`)
+			data = []byte(`{"claude":{"version":"2.1.311"},"python":{"version":"3.13.18"},"git":{"version":"2.56.0"},"gh":{"version":"2.103.3"}}`)
 		}
 		if err := os.WriteFile(filename, data, 0600); err != nil {
 			t.Fatal(err)

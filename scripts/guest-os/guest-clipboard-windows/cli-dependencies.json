@@ -13,11 +13,13 @@
     "sha256": "7369f7a35f261222a6ac8b3a87c1c88eeebee8af945d85346202591a64038dd3"
   },
   "claude": {
-    "version": "2.1.311",
-    "filename": "claude-2.1.311-win32-x64.exe",
-    "url": "https://downloads.claude.ai/claude-code-releases/2.1.311/win32-x64/claude.exe",
-    "manifest": "https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json",
-    "sha256": "966f4b2ce962298f5dee6a942e8c47c8f97392e69e728e622319a98b259c0680"
+    "channel": "latest"
+  },
+  "gh": {
+    "version": "2.103.3",
+    "filename": "gh_2.103.3_windows_amd64.zip",
+    "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_amd64.zip",
+    "sha256": "98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0"
   },
   "git": {
     "version": "2.56.0.4",

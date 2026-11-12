@@ -49,8 +49,10 @@ for (const failure of ["http", "native"]) {
   try {
     await page.getByRole("dialog",{name:"首次设置虚拟 Mac"}).waitFor();
     await waitCall("screen");
+    await page.getByRole("dialog",{name:"首次设置虚拟 Mac"}).getByText(/打开 Cage Guest Window 的窗口录制开关/).waitFor();
     const image = page.getByRole("dialog",{name:"首次设置虚拟 Mac"}).getByRole("img");
     await image.waitFor();
+    if (process.env.CAGE_INITIALIZATION_EVIDENCE) await page.screenshot({ path: `${process.env.CAGE_INITIALIZATION_EVIDENCE}/setup-window-${failure}.png`, fullPage: true });
     const box = await image.boundingBox();
     await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
     await page.mouse.wheel(0,400);
@@ -60,18 +62,21 @@ for (const failure of ["http", "native"]) {
     await waitCall("fill-password");
     permissions.screen=true;
     await waitCall("input");
+    await page.getByRole("dialog",{name:"首次设置虚拟 Mac"}).getByText(/打开 Cage Guest Window 的辅助功能开关/).waitFor();
     permissions.input=true;
     await waitCall("projects");
+    await page.getByRole("dialog",{name:"首次设置虚拟 Mac"}).getByText(/打开 macFUSE 和 macFUSE \(local\) 两个开关，用于/).waitFor();
     assert.ok(!calls.includes("finish"),"finished before filesystem permission");
     permissions.projects=true;
     await page.getByRole("button",{name:"返回设置指引"}).click();
     const retry=page.getByRole("button",{name:"重试完成设置"});
     await retry.waitFor();
-    await page.getByRole("button",{name:"文件系统扩展 ✓",exact:true}).click();
+    await page.getByText("管理员密码与找不到设置页时的帮助",{exact:true}).click();
+    await page.getByRole("button",{name:"重新打开文件系统扩展",exact:true}).click();
     await page.getByRole("alert").waitFor({state:"hidden"});
     assert.ok(await retry.isVisible(), "checking permissions hid the completion retry");
     await retry.click();
-    await page.getByRole("heading",{name:"正在准备虚拟 Mac"}).waitFor({state:"hidden"});
+    await page.getByRole("heading",{name:"完成虚拟 Mac 的系统授权"}).waitFor({state:"hidden"});
     await page.getByRole("complementary", { name: "项目与终端" }).waitFor();
     await page.evaluate(() => window.cageNativeAction("settings"));
     await page.getByRole("region", { name: "设置", exact: true }).waitFor();

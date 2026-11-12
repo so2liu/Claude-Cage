@@ -17,7 +17,7 @@ try {
     $workerArguments=@('user-enrollment','--vm-id',$vm.ToString('D'),'--host-sid',$identity.User.Value,'--profile',('"'+$profile+'"'),'--state',('"'+$state+'"'),'--installation-id',$id.ToString('D'),'--pipe',$pipe,'--parent-pid',[string]$PID)
     $worker=Start-Process -FilePath $ManagerExecutable -ArgumentList $workerArguments -NoNewWindow -PassThru
     $context=@{Pipe=$pipe;VMID=$vm.ToString('D');HostSID=$identity.User.Value;WorkerPID=[uint32]$worker.Id;WorkerStarted=[Cage.HostEnrollment.Native]::Started([uint32]$worker.Id);WorkerExe=[IO.Path]::GetFullPath($ManagerExecutable);OwnerPID=[uint32]$PID;OwnerStarted=[Cage.HostEnrollment.Native]::Started([uint32]$PID)}
-    Wait-CageHostEnrollment $context
+    Wait-CageHostEnrollment $context $worker
     $ctxPath=Join-Path $root 'context.json';[IO.File]::WriteAllText($ctxPath,($context|ConvertTo-Json))
     $module=Join-Path $PSScriptRoot 'windows-host-enrollment.ps1'
     $senderPath=Join-Path $root 'sender.ps1';$result=Join-Path $root 'result.json'

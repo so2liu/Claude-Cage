@@ -504,13 +504,14 @@ function App() {
     }
   };
   const archiveSession = async (session, anchor) => {
-    if (!(await confirm({title:"归档这段会话？", body:"归档会关闭关联终端。历史将保留，可从设置中的已归档会话恢复。", confirm:"归档会话", anchor}))) return;
-    try {
-      await api("/cli/sessions/" + session.id + "/archive", {});
-      setTabs(list => list.filter(tab => tab.cli_session_id !== session.id));
-      sessionsChanged();
-      refreshStatus.current?.();
-    } catch (error) { notify(error.message); }
+    await confirm({title:"归档这段会话？", body:"归档会关闭关联终端。历史将保留，可从设置中的已归档会话恢复。", confirm:"归档会话", pendingLabel:"正在归档…", anchor,
+      submit: async () => {
+        await api("/cli/sessions/" + session.id + "/archive", {});
+        setTabs(list => list.filter(tab => tab.cli_session_id !== session.id));
+        sessionsChanged();
+        refreshStatus.current?.();
+      },
+    });
   };
   const pinSession = async session => {
     try {
@@ -883,9 +884,7 @@ function App() {
         if (k === "w") {
           event.preventDefault();
           event.stopImmediatePropagation();
-          const resolve = dialog.resolve;
-          setDialog(null);
-          resolve(false);
+          void finishDialog(false);
         }
         return;
       }
@@ -1026,9 +1025,7 @@ function App() {
           return;
         }
         if (dialog) {
-          const resolve = dialog.resolve;
-          setDialog(null);
-          resolve(false);
+          void finishDialog(false);
         } else if (
           settingsOpen ||
           transfer ||
@@ -1191,7 +1188,16 @@ function App() {
   useEffect(() => {
     if (status?.workspace) setSelectedProject(status.workspace);
   }, [status?.workspace]);
-  const finishDialog = (value) => {
+  const finishDialog = async (value) => {
+    if (!dialog || dialog.pending) return;
+    if (value === true && dialog.submit) {
+      setDialog({ ...dialog, pending: true, error: "" });
+      try { await dialog.submit(); }
+      catch (error) {
+        setDialog({ ...dialog, pending: false, error: error.message });
+        return;
+      }
+    }
     const resolve = dialog.resolve;
     setDialog(null);
     resolve(value);
@@ -1263,23 +1269,24 @@ function App() {
         <Modal
           title={dialog.title}
           anchor={dialog.anchor}
-          onClose={() => finishDialog(false)}
+          onClose={dialog.pending ? undefined : () => finishDialog(false)}
           footer={
             <>
-              <button onClick={() => finishDialog(false)}>取消</button>
+              <button disabled={dialog.pending} onClick={() => finishDialog(false)}>取消</button>
               {dialog.secondary && (
-                <button onClick={() => finishDialog("secondary")}>
+                <button disabled={dialog.pending} onClick={() => finishDialog("secondary")}>
                   {dialog.secondary}
                 </button>
               )}
-              <button className="primary" onClick={() => finishDialog(true)}>
-                {dialog.confirm}
+              <button className="primary" disabled={dialog.pending} onClick={() => finishDialog(true)}>
+                {dialog.pending ? dialog.pendingLabel : dialog.confirm}
               </button>
             </>
           }
         >
           <div className="modal-body">
             <p>{dialog.body}</p>
+            {dialog.error && <div className="error-message" role="alert">{dialog.error}</div>}
           </div>
         </Modal>
       )}
@@ -1517,6 +1524,7 @@ function App() {
                     <div className="pane-body">
                       <TerminalView
                         session={{ ...tab, id: tab.sessionId }}
+                        onLoginTab={({ id }) => showBrowserResult({ id, kind: "web", login: true, incognito: true, title: "账号授权" })}
                         onControls={(control) =>
                           control
                             ? terminalControls.current.set(tab.id, control)

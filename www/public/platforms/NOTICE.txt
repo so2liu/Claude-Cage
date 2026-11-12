@@ -1,6 +1,6 @@
-Platform icons: Apple, Windows and Linux, Font Awesome Free 6.7.2
+Platform icons: Apple, Windows, Linux and Android, Font Awesome Free 6.7.2
 Copyright Fonticons, Inc. https://fontawesome.com
-Source: https://github.com/FortAwesome/Font-Awesome/tree/6.x/svgs/brands
+Source: https://github.com/FortAwesome/Font-Awesome/tree/6.7.2/svgs/brands
 Icons licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
 Unmodified SVG files; original attribution is retained in each file.
 See LICENSE.txt for the upstream license notice.

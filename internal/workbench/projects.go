@@ -61,6 +61,7 @@ func (s *Server) openProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.op.TryLock() {
+		w.Header().Set("X-Cage-Recovery", "project-operation-busy")
 		http.Error(w, "另一个操作仍在进行，请稍候", 409)
 		return
 	}
@@ -84,6 +85,16 @@ func (s *Server) openProject(w http.ResponseWriter, r *http.Request) {
 			}
 			s.mu.Unlock()
 			if grant != "" {
+				// Only an explicit project open should restore the approval app;
+				// background probes and frame polling must not take guest focus.
+				ctx, cancel := context.WithTimeout(s.operationContext(), 5*time.Second)
+				_, openErr := s.guestControl(ctx, "/usr/bin/open -a /Applications/CageProjectAccess.app", "macos-project-approval")
+				cancel()
+				if openErr != nil {
+					w.Header().Set("X-Cage-Recovery", "project-approval")
+					requestError(w, errors.New("未能显示客机项目授权窗口，请重试"))
+					return
+				}
 				jsonReply(w, map[string]string{"workspace": path, "approval": grant})
 				return
 			}

@@ -80,6 +80,13 @@ function probe(path) {
       "-g",
       "AppleLocale",
     ]).split("@")[0];
+    const languages = read("/usr/bin/defaults", ["read", "-g", "AppleLanguages"]);
+    if (languages) {
+      const primary = spawnSync("/usr/bin/plutil", ["-extract", "0", "raw", "-o", "-", "-"], {
+        input: languages, encoding: "utf8", timeout: 2500,
+      });
+      if (primary.status === 0) result.system_language = primary.stdout.trim();
+    }
     try {
       const zone = fs.readlinkSync("/etc/localtime").split("/zoneinfo/")[1];
       if (zone) result.system_timezone = zone;

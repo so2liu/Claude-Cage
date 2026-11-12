@@ -47,6 +47,10 @@ func TestWindowsBrowserRelayHelper(t *testing.T) {
 		var result any = map[string]any{"ok": true}
 		switch request.Path {
 		case "/frame":
+			if code := os.Getenv("CAGE_BROWSER_FRAME_FAILURE"); code != "" {
+				result = map[string]any{"error": code, "code": code}
+				break
+			}
 			time.Sleep(time.Hour)
 		case "/tabs":
 			result = map[string]any{"active": "tab", "tabs": []any{}}
@@ -208,6 +212,29 @@ func TestWindowsBrowserCanceledFrameCannotBecomeNextViewerReply(t *testing.T) {
 	}
 	if json.Unmarshal(data, &state) != nil || state.Active != "tab" {
 		t.Fatal("stale frame replaced new tab response")
+	}
+}
+
+func TestWindowsBrowserPreservesPopupFrameFailure(t *testing.T) {
+	for _, code := range []string{"desktop_target_changed", "desktop_capture_busy", "desktop_empty_frame", "frame_unavailable"} {
+		t.Run(code, func(t *testing.T) {
+			client := fixtureWindowsBrowserClient(t)
+			start := client.start
+			client.start = func(ctx context.Context) (*exec.Cmd, error) {
+				cmd, err := start(ctx)
+				if err == nil {
+					cmd.Env = append(cmd.Env, "CAGE_BROWSER_FRAME_FAILURE="+code)
+				}
+				return cmd, err
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			_, err := client.request(ctx, "GET", "/frame", nil)
+			var failure windowsBrowserFailure
+			if !errors.As(err, &failure) || failure.code != code {
+				t.Fatalf("lost structured code %s: %v", code, err)
+			}
+		})
 	}
 }
 

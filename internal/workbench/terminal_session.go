@@ -26,6 +26,9 @@ type terminalSession struct {
 	conversationEnded     bool
 	workspace             string
 	kind, claudeAccountID string
+	loginGuestID          string
+	loginLinkMu           sync.Mutex
+	loginLinkCleanup      sync.Once
 	claudeAccountSource   string
 	cmd                   *exec.Cmd
 	file                  terminalPTY

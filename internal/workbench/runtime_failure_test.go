@@ -41,6 +41,8 @@ func TestRunCageExplainsCommonFailure(t *testing.T) {
 		{"curl: (28) Operation timed out", "超时"},
 		{"E: No space left on device", "空间不足"},
 		{"curl: (60) certificate verify failed", "证书验证"},
+		{"Error: Base VM not found. Run 'agent-vm setup' first.", "基础模板缺失"},
+		{"Error: Base VM setup did not complete. Run 'agent-vm setup' again.", "基础模板尚未安装完成"},
 		{"CAGE_WINDOWS_MAINTENANCE_HOST_MANAGER synthetic stage token=private-error-secret", "系统管理助手安装未完成"},
 		{"CAGE_WINDOWS_MAINTENANCE_GUEST_CONNECTION synthetic stage token=private-error-secret", "客机连接未完成"},
 		{"unrecognized failure token=private-error-secret", "退出码 7"},

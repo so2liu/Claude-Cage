@@ -87,6 +87,34 @@ try {
     if (!$first.Registered -or !$again.Registered -or $installedCount -ne 1) {
         throw 'Expected exactly one registration after two Install actions.'
     }
+    Assert-ClaudeDesktopRelease $fixture '4.23118.0'
+    Expect-Failure { Assert-ClaudeDesktopRelease $fixture '4.23119.0' } 'differs from the selected release'
+    $script:provisioned=@()
+    $script:provisionCount=0
+    function Get-AppxProvisionedPackage { param([switch]$Online) $script:provisioned }
+    function Add-AppxProvisionedPackage {
+        param([switch]$Online,$PackagePath,[switch]$SkipLicense,$Regions)
+        $script:provisionCount++
+        $script:provisioned=@([pscustomobject]@{DisplayName='Claude';PackageName='Claude_4.23118.0.0_x64__pzs8sxrjxfjjc'})
+    }
+    Install-ProvisionedClaude $fixture
+    Install-ProvisionedClaude $fixture
+    if ($provisionCount -ne 1) { throw 'Provisioning did not preserve the same installed version.' }
+    $script:provisioned=@([pscustomobject]@{DisplayName='Claude';PackageName='Claude_4.23119.0.0_x64__pzs8sxrjxfjjc'})
+    Install-ProvisionedClaude $fixture
+    if ($provisionCount -ne 1) { throw 'Provisioning downgraded a newer installed version.' }
+    $script:provisioned=@([pscustomobject]@{DisplayName='Claude';PackageName='Claude_4.23117.0.0_x64__pzs8sxrjxfjjc'})
+    Install-ProvisionedClaude $fixture
+    if ($provisionCount -ne 2) { throw 'Provisioning did not upgrade the older installed version.' }
+    $manifest.Package.Identity.SetAttribute('Version','4.23119.0.0')
+    $script:provisioned=@()
+    Install-ProvisionedClaude $fixture 'S-1-5-21-1-2-3-1001'
+    if ($provisionCount -ne 2) { throw 'Provisioning replaced a newer version registered for the paired user.' }
+    $manifest.Package.Identity.SetAttribute('Version','4.23118.0.0')
+    $signature.Status='HashMismatch'
+    Expect-Failure { Install-ProvisionedClaude $fixture } 'did not validate'
+    if ($provisionCount -ne 2) { throw 'An untrusted MSIX reached provisioning.' }
+    $signature.Status='Valid'
 } finally { if ([IO.File]::Exists($fixture)) { [IO.File]::Delete($fixture) } }
 
 $target = [Guid]::NewGuid()

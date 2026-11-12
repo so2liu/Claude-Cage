@@ -1,11 +1,14 @@
 package workbench
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +16,62 @@ import (
 	"github.com/sylvinus/agent-vm/internal/managedproxy"
 	"golang.org/x/crypto/ssh"
 )
+
+func TestMacOSLocaleKeepsSecondaryLanguages(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("uses native macOS defaults")
+	}
+	domain := filepath.Join(t.TempDir(), "regional-preferences")
+	run := func(name string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("preference operation %s: %v, %s", name, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	apply := func(locale string) { run("/bin/bash", "-c", macOSLocaleScript, "cage-locale", domain, locale) }
+	apply("ja_JP")
+	if got := run("/usr/bin/defaults", "read", domain, "AppleLocale"); got != "ja_JP" {
+		t.Fatalf("new preferences: %q", got)
+	}
+	run("/usr/bin/defaults", "write", domain, "AppleLanguages", "-array", "fr-FR", "en-US", "ja-JP")
+	apply("en_US")
+	apply("en_US")
+	if got := run("/usr/bin/plutil", "-extract", "AppleLanguages", "json", "-o", "-", domain+".plist"); got != `["en-US","fr-FR","ja-JP"]` {
+		t.Fatalf("updated preferences: %q", got)
+	}
+}
+
+func TestMacOSRegionWaitsForPreferenceAndRuntime(t *testing.T) {
+	var applied atomic.Bool
+	var samples atomic.Int32
+	g := newMacWorkspaceGuest(t, func(ch ssh.Channel, command string) (uint32, bool) {
+		if strings.Contains(command, "cage-locale") && strings.Contains(command, "NSGlobalDomain") && strings.Contains(command, "en_US") {
+			applied.Store(true)
+			return 0, true
+		}
+		if strings.Contains(command, "result.system_timezone") && applied.Load() {
+			zone, language := "America/Los_Angeles", "en-US"
+			switch samples.Add(1) {
+			case 1:
+				zone = "GMT"
+			case 2:
+				language = "fr-FR"
+			}
+			fmt.Fprintf(ch, `{"tz":%q,"system_timezone":"America/Los_Angeles","system_locale":"en_US","system_language":%q,"process_locale":"en-US"}`, zone, language)
+			return 0, true
+		}
+		return 1, true
+	})
+	cfg := cage.DefaultConfig()
+	cfg.Timezone = "America/Los_Angeles"
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	if err := g.s.syncMacOSRegion(ctx, cfg); err != nil || samples.Load() != 3 {
+		t.Fatalf("startup observations=%d, err=%v", samples.Load(), err)
+	}
+}
 
 func TestMacOSStartAndControllerReconnectRequireFreshNetworkCheck(t *testing.T) {
 	if runtime.GOOS != "darwin" {

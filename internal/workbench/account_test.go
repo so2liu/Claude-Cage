@@ -167,6 +167,12 @@ func TestLockDisconnectsTerminalViewerWithoutEndingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Close()
+	var marker struct {
+		Type string `json:"type"`
+	}
+	if err := ws.ReadJSON(&marker); err != nil || marker.Type != "history" {
+		t.Fatalf("history marker: %+v, %v", marker, err)
+	}
 	_, data, err := ws.ReadMessage()
 	if err != nil || string(data) != "still running" {
 		t.Fatal("viewer did not attach", err)

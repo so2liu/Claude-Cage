@@ -6,6 +6,20 @@ import (
 	"time"
 )
 
+func TestWindowsInstallationInteractionStages(t *testing.T) {
+	for _, stage := range []string{"account", "oobe", "credentials", "media", "tools", "services"} {
+		progress := parseSetupProgress("CAGE_GUEST_STAGE windows-11 " + stage)
+		if progress == nil || progress.System != "windows-11" || progress.Operation != stage || progress.Label == "" {
+			t.Fatalf("Windows installation stage was lost: %s %+v", stage, progress)
+		}
+	}
+	for _, system := range []string{"macos", "debian-13", "ubuntu-22.04"} {
+		if parseSetupProgress("CAGE_GUEST_STAGE "+system+" oobe") != nil {
+			t.Fatalf("Windows interaction stage accepted for %s", system)
+		}
+	}
+}
+
 // Child pipes may split a progress line across writes. A fallback mirror may
 // restart from zero, and an absent Content-Length must stay indeterminate.
 func TestSetupProgressFromChildOutput(t *testing.T) {
@@ -91,5 +105,34 @@ func TestToolProgressUsesOnlyKnownPackageNames(t *testing.T) {
 	}
 	if p := parseSetupProgress("CAGE_TOOL_BYTES chromium.deb 12 10"); p != nil {
 		t.Fatalf("excess bytes entered UI: %+v", p)
+	}
+}
+
+func TestMacHostDownloadsReplacePreviousComponentProgress(t *testing.T) {
+	for _, name := range []string{"chrome.dmg", "macos-cli-claude", "macos-cli-uv.tar.gz", "macos-cli-python.tar.gz", "macos-cli-git.tar.gz"} {
+		p := parseSetupProgress("CAGE_HOST_BYTES " + name + " 25 100")
+		if p == nil || p.System != "macos" || p.Total != 100 || *p.Received != 25 {
+			t.Fatalf("missing host component progress: %s %+v", name, p)
+		}
+		if p := parseSetupProgress("下载 " + name); p == nil || p.Received != nil {
+			t.Fatalf("missing component start: %s %+v", name, p)
+		}
+	}
+	for _, line := range []string{"CAGE_HOST_BYTES unknown 1 2", "CAGE_HOST_BYTES chrome.dmg 3 2", "CAGE_HOST_BYTES chrome.dmg -1 2"} {
+		if p := parseSetupProgress(line); p != nil {
+			t.Fatalf("invalid host progress: %s", line)
+		}
+	}
+}
+
+func TestMacOSSetupProgressReportsHostRetry(t *testing.T) {
+	p := parseSetupProgress("CAGE_HOST_RETRY editor.tgz 2")
+	if p == nil || p.Label != "正在下载 macOS 网页编辑器（准备第 2/3 次尝试）" {
+		t.Fatal(p)
+	}
+	for _, line := range []string{"CAGE_HOST_RETRY unknown 2", "CAGE_HOST_RETRY editor.tgz 0"} {
+		if p := parseSetupProgress(line); p != nil {
+			t.Fatal(p)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 noVNC is distributed under MPL-2.0. See LICENSE.txt and docs/LICENSE.MPL-2.0.
 
 The Cage workbench includes local changes for clipboard transfer, native input
-method composition, frame retention during resize, and decoder cleanup.
+method composition, frame retention during resize, a local cursor fallback,
+pixel wheel distances, and decoder cleanup.
 The modified source is included in the application under licenses/novnc-source.
 Other component licenses are included under docs/ and vendor/pako/LICENSE.

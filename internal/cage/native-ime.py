@@ -15,6 +15,8 @@ limit = 32768
 
 def request():
     data = sys.stdin.buffer.readline(limit + 1)
+    if not data:
+        raise EOFError
     if len(data) > limit or not data.endswith(b'\n'):
         raise ValueError('Invalid input request')
     with socket.socket(socket.AF_UNIX) as client:
@@ -25,13 +27,29 @@ def request():
     if len(result) > limit or not result.endswith(b'\n'):
         raise ValueError('Invalid input response')
     sys.stdout.buffer.write(result)
+    sys.stdout.buffer.flush()
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--request']:
     try:
         request()
-    except (OSError, ValueError):
+    except (OSError, ValueError, EOFError):
         print('{"available":false}')
+    sys.exit(0)
+
+if __name__ == '__main__' and sys.argv[1:] == ['--relay']:
+    # One authorized caller sends consecutive requests, one line each, without
+    # starting a process for every caret poll. Its closed pipe ends the relay.
+    while True:
+        try:
+            request()
+        except EOFError:
+            break
+        except OSError:
+            print('{"available":false}', flush=True)
+        except ValueError:
+            # The stream has no boundary to resume from.
+            sys.exit(1)
     sys.exit(0)
 
 import gi

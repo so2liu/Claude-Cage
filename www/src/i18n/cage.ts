@@ -51,7 +51,7 @@ function readCopy(language: typeof languages[number]) {
     hero: isChinese ? '把 Claude 大小姐' : 'Claude Cage',
     heroAccent: language.code === 'zh' ? '关起来。' : language.code === 'zh-TW' ? '關起來。' : '',
     tagline: isChinese ? plain(slogan).split(/[，,]/).slice(1).join('，') : plain(slogan),
-    intro: reasonParagraphs[1], requirements: 'macOS · Windows · Linux', artAlt: 'Claude Cage',
+    intro: reasonParagraphs[1], requirements: 'macOS · Windows · Linux · Android · iOS', artAlt: 'Claude Cage',
     why: reason.title, whyText: reasonParagraphs[0], whyNote: limit,
     keyFeatures: bullets(reason.body).map(plain),
     featureTitle: uses.title, features: bullets(uses.body).map(pair),

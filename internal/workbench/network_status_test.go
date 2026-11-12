@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,11 @@ func TestNetworkStatusImmediatelyAfterManualGrant(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 					t.Fatal(err)
 				}
-				if status.Safety.Gate == nil || status.Safety.Gate.Mode != wantMode || status.NetworkError != wantError {
+				errorMatches := status.NetworkError == wantError
+				if wantMode == cage.GateClosed && tc.failure == "exit probe" {
+					errorMatches = strings.HasPrefix(status.NetworkError, wantError+"；") && strings.Contains(status.NetworkError, "自动重检")
+				}
+				if status.Safety.Gate == nil || status.Safety.Gate.Mode != wantMode || !errorMatches {
 					t.Fatalf("expected %s and %q, got %+v", wantMode, wantError, status)
 				}
 				if wantMode == cage.GateOpen && status.Safety.Error != "" {

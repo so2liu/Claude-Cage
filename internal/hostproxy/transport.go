@@ -1,4 +1,4 @@
-// Package hostproxy routes host-side system image requests through the host's
+// Package hostproxy routes host-side image and application requests through the host's
 // proxy settings. Guest traffic must continue to use cage.Egress instead.
 package hostproxy
 
@@ -54,6 +54,23 @@ func NewTransport() *http.Transport {
 	copy := *cfg
 	environment.Unlock()
 	return transport(&copy, systemProxy)
+}
+
+// DownloadEnvironment restores only the captured proxy variables for a host
+// downloader subprocess. Callers must not pass these into guest operations.
+func DownloadEnvironment() []string {
+	environment.Lock()
+	defer environment.Unlock()
+	cfg := environment.config
+	if cfg == nil {
+		cfg = readEnvironment()
+	}
+	return []string{
+		"HTTP_PROXY=" + cfg.HTTPProxy, "http_proxy=" + cfg.HTTPProxy,
+		"HTTPS_PROXY=" + cfg.HTTPSProxy, "https_proxy=" + cfg.HTTPSProxy,
+		"NO_PROXY=" + cfg.NoProxy, "no_proxy=" + cfg.NoProxy,
+		"ALL_PROXY=", "all_proxy=",
+	}
 }
 
 func transport(env *httpproxy.Config, system func(*http.Request) (*url.URL, error)) *http.Transport {

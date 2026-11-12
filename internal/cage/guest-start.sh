@@ -28,6 +28,8 @@ p=Path('/etc/claude-cage/browser-control.json')
 d=json.loads(p.read_text()) if p.exists() else {'token':secrets.token_hex(32)}
 scale = 1.5 if os.environ['CAGE_DISPLAY_SCALE'] == '1.5' else 2
 d['display_scale'] = scale
+# With a settings manager each viewer chooses the density of its own screen.
+d['dynamic_scale'] = os.path.exists('/usr/bin/xsettingsd')
 scale_file = Path('/etc/claude-cage/display-scale')
 scale_file.write_text(str(scale) + '\n')
 scale_file.chmod(0o644)
@@ -52,6 +54,7 @@ d.setdefault("profile", {})["password_manager_enabled"] = False
 p.write_text(json.dumps(d))
 PYCODE
 sudo systemctl reset-failed cage-display cage-window-manager cage-browser cage-vnc cage-webvnc 2>/dev/null || true
+sudo systemctl reset-failed cage-display-governor 2>/dev/null || true
 sudo systemctl restart cage-display cage-window-manager cage-browser cage-vnc cage-webvnc
 # Seed only appearance settings for a new editor profile. Existing preferences stay intact.
 python3 - <<'PYEDITOR'

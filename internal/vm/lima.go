@@ -244,6 +244,9 @@ func fromLima(inst *limatype.Instance) *Instance {
 // exprs are the yq expressions of s, as limactl's edit flags make them.
 func exprs(s Settings) ([]string, error) {
 	var e []string
+	if s.macOSTimezone != "" {
+		e = append(e, ".timezone = "+strconv.Quote(s.macOSTimezone))
+	}
 	if s.CPUs > 0 {
 		e = append(e, fmt.Sprintf(".cpus = %d", s.CPUs))
 	}
@@ -357,7 +360,7 @@ func cageDebianImages(images []limatype.Image) ([]byte, error) {
 		if !ok || img.Variant != "genericcloud" || img.Digest.Validate() != nil || img.Digest.Algorithm() != "sha512" {
 			continue
 		}
-		for _, base := range []string{"https://mirrors.nju.edu.cn/debian-cdimage/cloud/", "https://mirrors.ustc.edu.cn/debian-cdimage/cloud/", upstream} {
+		for _, base := range []string{upstream, "https://mirrors.nju.edu.cn/debian-cdimage/cloud/", "https://mirrors.ustc.edu.cn/debian-cdimage/cloud/"} {
 			candidate := img
 			candidate.Location = base + suffix
 			candidates = append(candidates, candidate)
@@ -528,6 +531,11 @@ func (l *Lima) Start(ctx context.Context, name string, log io.Writer) error {
 		}
 		settings.MemoryGiB, settings.CPUs, err = allocation.Limits()
 		if *inst.Config.OS == limatype.DARWIN && err == nil {
+			cfg, loadErr := cage.Load(configPath)
+			if loadErr != nil {
+				return loadErr
+			}
+			settings.macOSTimezone = cfg.Timezone
 			requirements, requirementErr := ReadMacOSResourceRequirements(inst.Dir)
 			if requirementErr != nil {
 				return requirementErr

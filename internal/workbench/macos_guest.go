@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,6 +164,39 @@ func (s *Server) startMacOSGuest() error {
 		return err
 	}
 	return s.checkNetworkIfWanted()
+}
+
+//go:embed macos-locale.sh
+var macOSLocaleScript string
+
+func (s *Server) syncMacOSRegion(ctx context.Context, cfg cage.Config) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	s.setMessage("正在应用 macOS 客机账户的地区与语言…")
+	locale := strings.TrimSuffix(cfg.Locale, ".UTF-8")
+	cmd := shellescape.QuoteCommand([]string{"/bin/bash", "-c", macOSLocaleScript, "cage-locale", "NSGlobalDomain", locale})
+	if _, err := s.guest(ctx, "exec "+cmd); err != nil {
+		return fmt.Errorf("macOS 客机已启动，未能写入客机账户的地区与语言：%w", err)
+	}
+	s.setMessage("正在等候 macOS 客机读回已保存的时区与语言…")
+	var last guestObservation
+	for {
+		got, err := s.macOSGuestObservation(ctx, map[string]any{"stage": "environment"})
+		if err == nil {
+			last = got
+			if s.guestSettingsOK(got, cfg) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return ctx.Err()
+			}
+			return fmt.Errorf("macOS 客机的时区和语言尚未全部生效。期望 %s、%s，系统读回时区 %q、地区 %q、首选语言 %q，进程读回 %q、%q。外网保持关闭。可稍后重检，时区持续不符时请停止并重新启动客机。", cfg.Timezone, cfg.Locale, last.SystemTimezone, last.SystemLocale, last.SystemLanguage, last.TZ, last.ProcessLocale)
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func (s *Server) stopMacOSGuest() error {

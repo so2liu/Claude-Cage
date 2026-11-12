@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
+import { caretPollDelay, caretPollFast, caretFreshFor } from "./caret-poll.mjs";
 const source = readFileSync(
   new URL("./remote-input.js", import.meta.url),
   "utf8",
@@ -59,8 +60,12 @@ function fixture(native = false, browserComposition = false, options = {}) {
   const context = {
     document: doc,
     window: win,
-    setTimeout,
-    clearTimeout,
+    setTimeout: options.setTimeout || setTimeout,
+    clearTimeout: options.clearTimeout || clearTimeout,
+    Date: options.Date || Date,
+    caretPollDelay,
+    caretPollFast,
+    caretFreshFor,
     Promise,
     Map,
     Set,
@@ -99,7 +104,7 @@ function fixture(native = false, browserComposition = false, options = {}) {
   };
   const install = vm.runInNewContext(source + "\ninstallRemoteInput;", context);
   const container = Object.assign(new EventTarget(), {
-      querySelector: () => null,
+      querySelector: () => options.surface || null,
       contains: (element) => element === canvas || element === target,
       append() {},
       getBoundingClientRect: () => ({ left: 0, top: 0 }),
@@ -125,9 +130,9 @@ function fixture(native = false, browserComposition = false, options = {}) {
         compositions.push({ id, ...value });
       } : null,
       tabId: () => currentTabId,
-      caretRect: browserComposition ? async () => ({
+      caretRect: options.caretRect || (browserComposition ? async () => ({
         available: true, context: "a".repeat(32), rect: [240, 120, 0, 24],
-      }) : null,
+      }) : null),
       pasteContent: async (content) => {
         const value = await content;
         if (rfb.target) pastes.push(value.png || value.text);
@@ -149,6 +154,7 @@ function fixture(native = false, browserComposition = false, options = {}) {
     return event;
   };
   return {
+    container,
     doc,
     win,
     rfb,
@@ -156,6 +162,7 @@ function fixture(native = false, browserComposition = false, options = {}) {
     pastes,
     texts,
     compositions,
+    copyContexts,
     writes,
     statuses,
     armCopy: () => {
@@ -291,6 +298,30 @@ test("a private browser clipboard uses its surface path while OS sharing is acti
   } finally { f.controller.dispose(); }
 });
 
+test("shared clipboard input skips fallback copy setup and resumes it after disconnect", async () => {
+  const nativeCalls = [];
+  const f = fixture(true, false, {
+    native: async operation => { nativeCalls.push(operation); return 1; },
+  });
+  try {
+    const beforeSharing = f.armCopy();
+    assert.ok(beforeSharing);
+    f.win.cageSharedClipboardActive = true;
+    nativeCalls.length = 0;
+    f.armCopy();
+    for (const [key, code] of [[" ", "Space"], ["Enter", "Enter"], ["Tab", "Tab"]]) {
+      f.key("keydown", key, code, { cageNativeInput: true });
+    }
+    assert.deepEqual(nativeCalls, []);
+    assert.deepEqual(f.copyContexts, [beforeSharing]);
+    f.win.cageSharedClipboardActive = false;
+    await f.controller.receiveCopy({ id: "tab-1", text: "obsolete", context: beforeSharing });
+    assert.deepEqual(nativeCalls, []);
+    assert.notEqual(f.armCopy(), beforeSharing);
+    assert.deepEqual(nativeCalls, ["clipboardRevision"]);
+  } finally { f.controller.dispose(); }
+});
+
 test("a right Command shortcut never leaves an extra left Command pressed", () => {
   const f = fixture();
   f.setGuestPlatform("macos");
@@ -376,6 +407,75 @@ test("browser composition is forwarded as preedit, then committed separately", a
       { id: "tab-1", mode: "update", text: "nihao", selectionStart: 5, selectionEnd: 5 },
       { id: "tab-1", mode: "commit", text: "你好", selectionStart: 0, selectionEnd: 0 },
     ]);
+  } finally {
+    f.controller.dispose();
+  }
+});
+
+// Timers and the clock advance together, one due timer at a time.
+function fakeClock() {
+  let now = 1_000_000, sequence = 0;
+  const timers = new Map();
+  return {
+    Date: { now: () => now },
+    setTimeout: (run, delay = 0) => { timers.set(++sequence, { at: now + delay, run }); return sequence; },
+    clearTimeout: (id) => { timers.delete(id); },
+    async advance(duration) {
+      const end = now + duration;
+      for (;;) {
+        const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+        if (!due) break;
+        timers.delete(due[0]);
+        now = due[1].at;
+        due[1].run();
+        for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+      }
+      now = end;
+    },
+  };
+}
+
+test("caret readings back off while the viewer is quiet and resume with input", async () => {
+  const clock = fakeClock();
+  let readings = 0;
+  const f = fixture(false, true, { ...clock, caretRect: async () => {
+    readings++;
+    return { available: true, context: "a".repeat(32), rect: [240, 120, 0, 24] };
+  } });
+  try {
+    f.rfb.focus();
+    await clock.advance(2900);
+    assert.equal(readings, 12);
+    readings = 0;
+    // The earlier fixed interval read the caret 240 times in this minute.
+    await clock.advance(60000);
+    assert.ok(readings >= 30 && readings <= 50, `${readings} readings`);
+    readings = 0;
+    await clock.advance(1900);
+    assert.equal(readings, 1);
+    // Input reschedules a slow wait instead of waiting it out.
+    f.key("keydown", "a", "KeyA");
+    readings = 0;
+    await clock.advance(250);
+    assert.equal(readings, 1);
+    await clock.advance(1000);
+    assert.equal(readings, 5);
+  } finally {
+    f.controller.dispose();
+  }
+});
+
+test("a composition begins from the last reading of a quiet viewer", async () => {
+  const clock = fakeClock();
+  const f = fixture(false, true, clock);
+  try {
+    f.rfb.focus();
+    await clock.advance(60000);
+    // Just before the next slow reading, the latest one is two seconds old.
+    await clock.advance(1900);
+    inputEvent(f, "compositionstart");
+    assert.equal(f.compositions[0]?.mode, "begin");
+    assert.equal(f.compositions[0].context, "a".repeat(32));
   } finally {
     f.controller.dispose();
   }
@@ -700,3 +800,71 @@ test("malformed native Command letters retain clipboard and redo semantics", asy
     f.controller.dispose();
   }
 });
+
+test('remote hover shape updates even without an editable focus and rejects arbitrary CSS', async () => {
+  const changes = [];
+  let cursor = 'text';
+  const f = fixture(false, false, {
+    surface: { style: { setProperty: (...args) => changes.push(args) } },
+    caretRect: async () => ({ available: false, cursor }),
+  });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(changes.at(-1), ['cursor', 'text', 'important']);
+    cursor = 'url(https://invalid.example/cursor)';
+    const before = changes.length;
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.equal(changes.length, before);
+    cursor = 'default';
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.deepEqual(changes.at(-1), ['cursor', 'default', 'important']);
+  } finally { f.controller.dispose(); }
+});
+
+for (const platform of ["windows", "windows-11"]) {
+test(platform + ' hover after toolbar focus refreshes cursor without activating native IME', async () => {
+  const changes = [], calls = [];
+  let cursor = 'default';
+  const f = fixture(true, false, {
+    surface: { style: { setProperty: (...args) => changes.push(args) } },
+    caretRect: async () => ({ available: true, cursor, rect: [20, 20, 1, 20] }),
+    native: async (...args) => { calls.push(args); return true; },
+  });
+  f.setGuestPlatform(platform);
+  try {
+    f.doc.activeElement = {};
+    f.win.cageNativeIMEAvailable = true;
+    f.container.dispatchEvent(new Event('pointermove'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(changes.at(-1), ['cursor', 'default', 'important']);
+    cursor = 'text';
+    f.container.dispatchEvent(new Event('pointermove'));
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.deepEqual(changes.at(-1), ['cursor', 'text', 'important']);
+    assert.equal(calls.filter(([name, value]) => name === 'remoteInput' && value.operation === 'activate').length, 0);
+  } finally { f.controller.dispose(); }
+});
+}
+
+for (const platform of ["linux", "darwin"]) {
+  test(platform + " toolbar hover makes no cursor query and keeps focused IME polling", async () => {
+    const clock = fakeClock();
+    let readings = 0;
+    const f = fixture(false, true, { ...clock, caretRect: async () => {
+      readings++;
+      return { available: true, context: "a".repeat(32) };
+    } });
+    f.setGuestPlatform(platform);
+    try {
+      f.doc.activeElement = f.local;
+      await clock.advance(1000);
+      const before = readings;
+      f.container.dispatchEvent(new Event("pointermove"));
+      await clock.advance(1000);
+      assert.equal(readings, before);
+      f.rfb.focus();
+      await clock.advance(2500);
+      assert.ok(readings > before);
+    } finally { f.controller.dispose(); }
+  });
+}

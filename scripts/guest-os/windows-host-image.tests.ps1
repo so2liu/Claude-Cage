@@ -70,4 +70,13 @@ if ($retireAt -lt 0 -or $publishAt -le $retireAt) { throw 'Host enrollment can p
 $retireAt = $publisher.Body.Extent.Text.LastIndexOf('Complete-CloneSetup $stageBinding')
 $publishAt = $publisher.Body.Extent.Text.IndexOf('[IO.File]::Copy($stageBinding')
 if ($retireAt -lt 0 -or $publishAt -le $retireAt) { throw 'The local host can publish before clone retirement.' }
+
+$manifestPublisher = Join-Path $PSScriptRoot 'publish-windows-component-manifest.ps1'
+$manifestBytes = [IO.File]::ReadAllBytes($manifestPublisher)
+if ($manifestBytes.Length -lt 3 -or $manifestBytes[0] -ne 0xEF -or $manifestBytes[1] -ne 0xBB -or $manifestBytes[2] -ne 0xBF) {
+    throw 'The component manifest publisher must start with a UTF-8 BOM for Windows PowerShell 5.1.'
+}
+$parseErrors = $null
+$null = [Management.Automation.Language.Parser]::ParseFile($manifestPublisher, [ref]$null, [ref]$parseErrors)
+if ($parseErrors.Count) { throw "The component manifest publisher failed Windows PowerShell parsing: $($parseErrors[0].Message)" }
 Write-Output 'Passed isolated account XML, locale preservation, build validation, retained credential identity and interrupted retirement recovery.'

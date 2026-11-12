@@ -14,6 +14,8 @@ const sessions = Array.from({ length: 18 }, (_, i) => ({
 }));
 const evidence = [];
 let failArchive = false;
+let holdArchive = false, releaseArchive;
+let archiveRequests = 0;
 let archived = 0;
 const dialog = page.getByRole("dialog", { name: "归档这段会话？", exact: true });
 const actions = title => page.getByRole("group", { name: `${title} 的操作`, exact: true, includeHidden: true });
@@ -28,7 +30,9 @@ const open = async title => {
 try {
   await page.route("**/api/cli/sessions", route => route.fulfill({ json: { sessions } }));
   await page.route("**/api/cli/sessions/*/archive", async route => {
-    if (failArchive) return route.fulfill({ status: 500, contentType: "text/plain", body: "测试：归档暂时失败" });
+    archiveRequests++;
+    if (holdArchive) await new Promise(resolve => { releaseArchive = resolve; });
+    if (failArchive) return route.fulfill({ status: 400, contentType: "text/plain", body: "环境正在执行其他操作" });
     const id = route.request().url().split("/").at(-2);
     sessions.splice(sessions.findIndex(session => session.id === id), 1);
     state.terminals = state.terminals.filter(terminal => terminal.cli_session_id !== id);
@@ -41,6 +45,16 @@ try {
   await page.getByRole("tab", { name: sessions[0].title, exact: true }).waitFor();
   await page.getByRole("button", { name: sessions.at(-1).title, exact: true }).waitFor();
   await mkdir(output, { recursive: true });
+  // A user can click the visible action text as well as its icon. Locator
+  // clicks on the icon alone hid the inert text beside the old buttons.
+  const firstActions = actions(sessions[0].title);
+  await page.locator(".sidebar-tab").filter({ has: firstActions }).hover();
+  await firstActions.getByRole("button", { name: "归档", exact: true }).hover();
+  await page.screenshot({ path: `${output}/${engine}-archive-label.png` });
+  await firstActions.locator(".terminal-action-label").filter({ hasText: /^归档$/ }).click();
+  await dialog.waitFor({ timeout: 2000 });
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(archived, 0, "action text bypassed archive confirmation");
   for (const width of [1280, 820]) {
     await page.setViewportSize({ width, height: 850 });
     const trigger = await open(sessions[0].title);
@@ -82,11 +96,21 @@ try {
   await open(sessions[0].title);
   failArchive = true;
   await dialog.getByRole("button", { name: "归档会话", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: "归档暂时失败" }).waitFor();
+  await dialog.getByRole("alert").filter({ hasText: "环境正在执行其他操作" }).waitFor();
   assert.equal(archived, 0, "failed archive removed a session");
   failArchive = false;
-  await open(sessions[0].title);
+  holdArchive = true;
   await dialog.getByRole("button", { name: "归档会话", exact: true }).press("Enter");
+  await dialog.getByRole("button", { name: "正在归档…", exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "取消", exact: true }).isDisabled(), true);
+  assert.equal(await dialog.getByRole("button", { name: "正在归档…", exact: true }).isDisabled(), true);
+  const pendingRequests = archiveRequests;
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.isVisible(), true, "pending archive was dismissed");
+  assert.equal(archiveRequests, pendingRequests, "pending archive was submitted twice");
+  await page.screenshot({ path: `${output}/${engine}-pending.png` });
+  releaseArchive(); holdArchive = false;
   await actions("正在处理的会话").waitFor({ state: "hidden" });
   assert.equal(archived, 1, "confirm should archive exactly once");
   await open(last);

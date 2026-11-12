@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,7 +165,10 @@ func TestInfrastructureDNSLiveIntegration(t *testing.T) {
 	if os.Getenv("CAGE_TEST_BOOTSTRAP") != "1" {
 		t.Skip("explicit host-network DNS test required")
 	}
-	ip, err := resolveInfrastructure(context.Background(), "example.com")
+	tr := &http.Transport{Proxy: nil}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
+	ip, err := resolveInfrastructureWith(context.Background(), "example.com", client, BootstrapDNSURLs())
 	if err != nil || !publicIP(ip) {
 		t.Fatal("redundant encrypted DNS lookup failed", err)
 	}
@@ -171,9 +176,6 @@ func TestInfrastructureDNSLiveIntegration(t *testing.T) {
 	// on this network; successful combined resolution is the required result.
 	for _, endpoint := range BootstrapDNSURLs() {
 		t.Run(endpoint, func(t *testing.T) {
-			tr := &http.Transport{Proxy: nil}
-			defer tr.CloseIdleConnections()
-			client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect refused") }}
 			ip, err := resolveInfrastructureWith(context.Background(), "example.com", client, []string{endpoint})
 			if err != nil || !publicIP(ip) {
 				t.Log("DNS endpoint unavailable on this network", err)
@@ -181,5 +183,73 @@ func TestInfrastructureDNSLiveIntegration(t *testing.T) {
 			}
 			t.Log("DNS endpoint returned a usable public IPv4")
 		})
+	}
+}
+
+func TestHostSubscriptionUsesChosenProxyAndPinnedPublicIP(t *testing.T) {
+	resolver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeDNSAnswer(t, w, r, nil) }))
+	defer resolver.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "example.com" || r.TLS.ServerName != "example.com" {
+			t.Error("subscription authority or TLS name changed")
+		}
+		io.WriteString(w, "proxies: []")
+	}))
+	defer origin.Close()
+	for _, encrypted := range []bool{false, true} {
+		var dnsCalls, sourceCalls atomic.Int32
+		proxy := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "CONNECT" {
+				http.Error(w, "unexpected proxy method", 400)
+				return
+			}
+			var upstream string
+			switch r.Host {
+			case resolver.Listener.Addr().String():
+				upstream = r.Host
+				dnsCalls.Add(1)
+			case "8.8.8.8:443":
+				upstream = origin.Listener.Addr().String()
+				sourceCalls.Add(1)
+			default:
+				t.Errorf("unvalidated proxy destination %s", r.Host)
+				http.Error(w, "bad target", 400)
+				return
+			}
+			conn, err := net.Dial("tcp", upstream)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			downstream, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer downstream.Close()
+			buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+			buf.Flush()
+			go io.Copy(conn, buf)
+			io.Copy(downstream, conn)
+		}))
+		if encrypted {
+			proxy.StartTLS()
+		} else {
+			proxy.Start()
+		}
+		defer proxy.Close()
+		addr, _ := url.Parse(proxy.URL)
+		host := origin.Client().Transport.(*http.Transport).Clone()
+		host.ForceAttemptHTTP2 = true
+		host.Proxy = http.ProxyURL(addr)
+		client := &http.Client{Transport: subscriptionHostTransport{host, []string{resolver.URL}}}
+		data, _, err := Fetch(t.Context(), client, "https://example.com/test-token")
+		if err != nil || string(data) != "proxies: []" || dnsCalls.Load() != 1 || sourceCalls.Load() != 1 {
+			t.Fatalf("encrypted=%v data=%q err=%v dns=%d source=%d", encrypted, data, err, dnsCalls.Load(), sourceCalls.Load())
+		}
+		if _, _, err = Fetch(t.Context(), client, "https://127.0.0.1/private"); err == nil {
+			t.Fatal("private destination accepted")
+		}
 	}
 }

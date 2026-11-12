@@ -56,6 +56,8 @@ cage stop          Stop the shared Cage environment
 cage list          List this cage profile's VMs
 cage doctor        Diagnose the VM
 cage diagnostics --json PATH.zip   Export a redacted diagnostic bundle
+cage version       Print this build's version. --min VERSION fails if older
+cage licenses      Print third-party license notices
 
 Configuration: ~/.claude-cage/config.json (override CLAUDE_CAGE_CONFIG).
 Each configuration directory is an independent cage profile.
@@ -88,9 +90,22 @@ func run() int {
 		os.Unsetenv(name)
 	}
 	args := os.Args[1:]
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
+	if len(args) > 0 && args[0] == "host-download" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := hostDownload(ctx, args[1:], os.Stdout); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Print(help)
 		return 0
+	}
+	// These read only this build's own metadata. Answering them before the
+	// profile is opened keeps `cage version --min` usable on a fresh install.
+	if args[0] == "version" || args[0] == "--version" || args[0] == "-V" || args[0] == "licenses" {
+		return cli.Main(args, cli.Stdio())
 	}
 	if args[0] == "agent" {
 		return runAgent(args[1:], os.Stdin, os.Stdout)
@@ -589,7 +604,7 @@ func run() int {
 		if resourceErr != nil {
 			return fail(resourceErr)
 		}
-		args = append([]string{"setup", "--memory", fmt.Sprint(memory), "--cpus", fmt.Sprint(cpus), "--disk", "24", "--preinstall=node,python,chromium,claude,code-server"}, args[1:]...)
+		args = append([]string{"setup", "--memory", fmt.Sprint(memory), "--cpus", fmt.Sprint(cpus), "--disk", "24", "--preinstall=node,python,chromium,gh,claude,code-server"}, args[1:]...)
 	}
 	if args[0] == "up" || args[0] == "login" {
 		result := cli.Main([]string{"run", "true"}, cli.Stdio())
@@ -630,7 +645,7 @@ func containerInstallScript(kind string) (string, error) {
 		return cage.GuestSetup, nil
 	case "tools":
 		script := "set -e\nexport CLAUDE_CAGE=1\n" + cage.APTBootstrapScript + "\n" + cage.ToolInstallPrelude()
-		enabled := map[string]bool{"NODE": true, "PYTHON": true, "CHROMIUM": true, "CLAUDE": true, "CODE_SERVER": true}
+		enabled := map[string]bool{"NODE": true, "PYTHON": true, "CHROMIUM": true, "GH": true, "CLAUDE": true, "CODE_SERVER": true}
 		for _, name := range []string{"PYTHON", "NODE", "RUBY", "RUST", "GOLANG", "DOCKER", "CHROMIUM", "GH", "CLAUDE", "OPENCODE", "CODEX", "VIBE", "PI", "CODE_SERVER", "CODE_CLAUDE", "CODE_OPENCODE", "CODE_CODEX", "CODE_VIBE", "MCP_CHROME", "MCP_PLAYWRIGHT"} {
 			value := "0"
 			if enabled[name] {

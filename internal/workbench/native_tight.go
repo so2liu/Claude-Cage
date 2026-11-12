@@ -12,7 +12,7 @@ import (
 // and placement without decompressing pixels or compressing them a second time.
 func nativeTightRectangles(frame windowsWindowFrame, encoding int32) ([]byte, uint16, bool, error) {
 	if len(frame.Overlays) != 0 {
-		return nil, 0, false, nil
+		return nativeTightOverlayRectangles(frame, encoding)
 	}
 	if frame.Width < 1 || frame.Height < 1 || frame.Width > 8192 || frame.Height > 8192 ||
 		int64(frame.Width)*int64(frame.Height) > 40_000_000 || len(frame.Target) == 0 || len(frame.Target) > 256 {
@@ -77,4 +77,38 @@ func nativeTightRectangles(frame windowsWindowFrame, encoding int32) ([]byte, ui
 		output = append(output, data...)
 	}
 	return output, uint16(len(panes)), true, nil
+}
+
+// Redraw the complete base before its overlays, preserving alpha and stacking
+// order without decoding and recompressing the entire desktop on the host.
+func nativeTightOverlayRectangles(frame windowsWindowFrame, encoding int32) ([]byte, uint16, bool, error) {
+	if len(frame.Overlays) > 16 {
+		return nil, 0, false, errors.New("应用覆盖画面无效")
+	}
+	overlays := frame.Overlays
+	frame.Overlays = nil
+	output, count, supported, err := nativeTightRectangles(frame, encoding)
+	if err != nil || !supported {
+		return nil, 0, supported, err
+	}
+	for _, overlay := range overlays {
+		if len(overlay.Panes) != 0 || len(overlay.Overlays) != 0 || overlay.Width > frame.Width || overlay.Height > frame.Height || overlay.X < -frame.Width || overlay.Y < -frame.Height || overlay.X > frame.Width || overlay.Y > frame.Height {
+			return nil, 0, false, errors.New("应用覆盖位置无效")
+		}
+		overlay.Target = frame.Target
+		part, n, ok, err := nativeTightRectangles(overlay.windowsWindowFrame, encoding)
+		if err != nil || !ok {
+			return nil, 0, ok, err
+		}
+		bounds := image.Rect(overlay.X, overlay.Y, overlay.X+overlay.Width, overlay.Y+overlay.Height)
+		if !bounds.In(image.Rect(0, 0, frame.Width, frame.Height)) {
+			// Keep the existing compositor for partially clipped overlays.
+			return nil, 0, false, nil
+		}
+		binary.BigEndian.PutUint16(part[0:2], uint16(overlay.X))
+		binary.BigEndian.PutUint16(part[2:4], uint16(overlay.Y))
+		output = append(output, part...)
+		count += n
+	}
+	return output, count, true, nil
 }

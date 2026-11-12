@@ -184,9 +184,10 @@ umask 022
 // Read the workbench preference at service startup so CLI and desktop launches
 // use the same setting without modifying the network configuration.
 func StartGuestServices(ctx context.Context, configPath string, cfg cage.Config, stdout, stderr io.Writer) error {
-	var prefs Preferences
+	prefs := Preferences{BalancedDisplay: true}
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), "workbench.json"))
 	if err == nil {
+		prefs.BalancedDisplay = false
 		if err = json.Unmarshal(data, &prefs); err != nil {
 			return fmt.Errorf("读取工作台画质设置失败: %w", err)
 		}

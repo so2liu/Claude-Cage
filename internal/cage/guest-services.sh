@@ -4,7 +4,7 @@ if systemctl is-active --quiet cage-webvnc; then
   sudo systemctl stop cage-webvnc
 fi
 if ! command -v X0tigervnc >/dev/null || ! command -v Xtigervnc >/dev/null || ! command -v openbox >/dev/null || ! command -v xrandr >/dev/null || ! command -v xdotool >/dev/null || ! command -v ibus-daemon >/dev/null || ! /usr/bin/python3 -c 'import gi; gi.require_version("IBus", "1.0"); gi.require_version("Gtk", "3.0")' 2>/dev/null; then
-  sudo env DEBIAN_FRONTEND=noninteractive APT_CONFIG="${CAGE_APT_CONFIG:-/dev/null}" apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-scraping-server tigervnc-tools openbox x11-xserver-utils xdotool libgtk-3-0 ibus ibus-gtk3 gir1.2-ibus-1.0 gir1.2-gtk-3.0 python3-gi
+  sudo env DEBIAN_FRONTEND=noninteractive APT_CONFIG="${CAGE_APT_CONFIG:-/dev/null}" apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-scraping-server tigervnc-tools openbox x11-xserver-utils xdotool libgtk-3-0 ibus ibus-gtk3 gir1.2-ibus-1.0 gir1.2-gtk-3.0 python3-gi python3-xlib xsettingsd
 fi
 cage_novnc_root=/usr/share/novnc
 if cage_is_ubuntu; then
@@ -58,6 +58,7 @@ fi
 sudo tee /etc/systemd/system/cage-display.service >/dev/null <<'UNIT'
 [Unit]
 Description=Claude Cage virtual browser display
+Wants=cage-display-governor.service
 [Service]
 User=cage-browser
 ExecStartPre=/usr/bin/rm -f /home/cage-browser/.vnc/display.sock
@@ -102,6 +103,21 @@ LogNamespace=cage
 KillMode=mixed
 Restart=on-failure
 RestartSec=2
+UNIT
+# Starts, restarts and stops with the display it paces. The display only
+# wants it: a guest without python3-xlib keeps its full refresh rate.
+sudo tee /etc/systemd/system/cage-display-governor.service >/dev/null <<'UNIT'
+[Unit]
+Description=Claude Cage browser display pacing
+PartOf=cage-display.service
+After=cage-display.service
+[Service]
+User=cage-browser
+Environment=DISPLAY=:77
+ExecStart=/usr/local/bin/cage-log-run /usr/local/bin/cage-display-governor
+LogNamespace=cage
+Restart=on-failure
+RestartSec=5
 UNIT
 sudo tee /etc/systemd/system/cage-vnc.service >/dev/null <<'UNIT'
 [Unit]

@@ -2,6 +2,8 @@ import { InlineSelect } from "./inline-select";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Download,
+  ChevronDown,
+  ChevronUp,
   Monitor,
   PanelLeftOpen,
   Power,
@@ -17,17 +19,39 @@ import "./claude-desktop.css";
 
 const desktopZooms = [0.75, 0.9, 1, 1.1, 1.25, 1.5];
 
-export function useDesktopZoom(storageKey = "cage-desktop-zoom") {
+export function useDesktopZoom(mode = false) {
+  const automatic = mode === true;
+  const storageKey = typeof mode === "string" ? mode : automatic ? "cage-windows-desktop-zoom" : "cage-desktop-zoom";
   const [zoom, setZoom] = useState(() => {
     try {
-      const value = Number(localStorage.getItem(storageKey));
-      return desktopZooms.includes(value) ? value : 1;
-    } catch { return 1; }
+      const stored = localStorage.getItem(storageKey);
+      if (automatic && (stored === null || stored === "auto")) return "auto";
+      const value = Number(stored);
+      return desktopZooms.includes(value) ? value : automatic ? "auto" : 1;
+    } catch { return automatic ? "auto" : 1; }
   });
   return [zoom, setZoom];
 }
 
-export function DesktopToolbar({ title = "Claude Desktop", storageKey = "cage-desktop-zoom", desktop, platform, zoom, setZoom, onConfirm, onStop, busy, refresh, sidebarCollapsed, onExpand, children }) {
+export function DesktopToolbar({ title = "Claude Desktop", storageKey, desktop, platform, zoom, setZoom, onConfirm, onStop, busy, refresh, sidebarCollapsed, onExpand, children, automatic = false }) {
+  const zoomKey = storageKey ?? (automatic ? "cage-windows-desktop-zoom" : "cage-desktop-zoom");
+  const [hidden, setHidden] = useState(() => {
+    try { return localStorage.getItem("cage-desktop-toolbar-hidden") === "true"; }
+    catch { return false; }
+  });
+  const toggleToolbar = (value) => {
+    setHidden(value);
+    try { localStorage.setItem("cage-desktop-toolbar-hidden", String(value)); }
+    catch { /* Keep the preference for this session. */ }
+  };
+  if (hidden && desktop?.running) {
+    return (
+      <div className="desktop-toolbar-reveal">
+        {sidebarCollapsed && <button className="icon-button" aria-label="展开侧栏" title="展开侧栏" onClick={onExpand}><PanelLeftOpen size={15} /></button>}
+        <button className="icon-button" aria-label="显示 Desktop 工具栏" title="显示 Desktop 工具栏" onClick={() => toggleToolbar(false)}><ChevronDown size={15} /></button>
+      </div>
+    );
+  }
   return (
       <header className="claude-desktop-toolbar">
         {sidebarCollapsed && (
@@ -50,10 +74,11 @@ export function DesktopToolbar({ title = "Claude Desktop", storageKey = "cage-de
           <label className="desktop-display-size">
             显示大小
             <InlineSelect aria-label="Desktop 显示大小" value={zoom} onValueChange={(next) => {
-              const value = Number(next);
+              const value = next === "auto" ? "auto" : Number(next);
               setZoom(value);
-              try { localStorage.setItem(storageKey, String(value)); } catch { /* Session-only preference. */ }
+              try { localStorage.setItem(zoomKey, String(value)); } catch { /* Session-only preference. */ }
             }}>
+              {automatic && <option value="auto">自适应（推荐）</option>}
               {desktopZooms.map((value) => <option key={value} value={value}>{Math.round(value * 100)}%{value === 1 ? "（默认）" : ""}</option>)}
             </InlineSelect>
           </label>
@@ -85,6 +110,7 @@ export function DesktopToolbar({ title = "Claude Desktop", storageKey = "cage-de
         >
           <RefreshCw size={15} />
         </button>
+        {desktop?.running && <button className="icon-button" aria-label="隐藏 Desktop 工具栏" title="隐藏 Desktop 工具栏" onClick={() => toggleToolbar(true)}><ChevronUp size={15} /></button>}
       </header>
   );
 }
@@ -104,7 +130,8 @@ export function ClaudeDesktop({
 }) {
   const [closedChooser, setClosedChooser] = useState("");
   const directoryRequest = uploads.find((item) => item.directory && item.id !== closedChooser);
-  const [zoom, setZoom] = useDesktopZoom();
+  const automatic = status.guest_system?.startsWith("windows");
+  const [zoom, setZoom] = useDesktopZoom(automatic);
   const windowVisible = useWindowVisibility();
   const screenVisible = visible && windowVisible;
   const [desktop, setDesktop] = useState(null);
@@ -194,7 +221,7 @@ export function ClaudeDesktop({
           await onProjectOpened(workspace);
         }}
       />}
-      <DesktopToolbar desktop={desktop} platform={status.guest_system === "windows-11" ? "Windows" : "Linux"} zoom={zoom} setZoom={setZoom}
+      <DesktopToolbar desktop={desktop} platform={status.guest_system === "windows-11" ? "Windows" : "Linux"} zoom={zoom} setZoom={setZoom} automatic={automatic}
         onConfirm={onConfirm} onStop={() => run("stop")} busy={busy} refresh={() => refresh()} sidebarCollapsed={sidebarCollapsed} onExpand={onExpand} />
       {(error || statusError || desktop?.failed) && (
         <div className="connection-banner" role="alert">
@@ -222,6 +249,7 @@ export function ClaudeDesktop({
             zoom={zoom}
             visible={visible}
             keyboard={status.keyboard}
+            guestPlatform={status.guest_system?.startsWith("windows") ? "windows" : status.guest_system}
             onStatus={onStatus}
             onFallback={onFallback}
           />

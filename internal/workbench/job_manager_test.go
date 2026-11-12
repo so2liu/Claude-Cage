@@ -290,3 +290,29 @@ func TestJobManagerRejectedPreparationDoesNotPublishJob(t *testing.T) {
 		t.Fatalf("failed preparation published a job: %+v %v", manager.snapshot(), err)
 	}
 }
+
+// The initialization view needs the failed prerequisite even when no project
+// error snapshot is available. This also survives wrapped lifecycle errors.
+func TestJobManagerPreservesProjectRecovery(t *testing.T) {
+	var manager jobManager
+	var operation sync.Mutex
+	defer manager.close()
+	_, err := manager.submit(&operation, "safety", 0, nil, nil, func() error {
+		return fmt.Errorf("network prerequisite: %w", &projectShareError{Path: "/shared/workspace", Recovery: "project-approval", Message: "请允许工作区访问"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := awaitJobIdle(t, &manager)
+	if job.Recovery != "project-approval" || job.Workspace != "/shared/workspace" || !strings.Contains(job.Error, "请允许工作区访问") {
+		t.Fatalf("lost actionable failure: %+v", job)
+	}
+	_, err = manager.submit(&operation, "safety", 0, nil, nil, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = awaitJobIdle(t, &manager)
+	if job.Error != "" || job.Recovery != "" || job.Workspace != "" {
+		t.Fatalf("stale recovery after retry: %+v", job)
+	}
+}

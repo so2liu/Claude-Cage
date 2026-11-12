@@ -69,6 +69,26 @@ function Assert-WindowsWorkbenchReport {
     }
 }
 
+function Wait-WindowsWorkbenchFiles {
+    param([Parameter(Mandatory)][string]$AppDirectory)
+    # The log relay can outlive the controller's profile lock. Wait for the
+    # isolated build's executable images to be released before moving them.
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    foreach ($relative in @('Cage.exe', 'resources/cage.exe')) {
+        $file = Join-Path $AppDirectory $relative
+        while ($true) {
+            try {
+                $handle = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                $handle.Dispose()
+                break
+            } catch [IO.IOException], [UnauthorizedAccessException] {
+                if ([DateTime]::UtcNow -ge $deadline) { throw "Smoke executable is still in use: $relative" }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+    }
+}
+
 function Assert-WindowsWorkbench {
     param([Parameter(Mandatory)][string]$AppDirectory)
     if (-not $IsWindows) { throw 'Workbench acceptance requires Windows.' }
@@ -86,6 +106,7 @@ function Assert-WindowsWorkbench {
     try {
         if (-not $window.WaitForExit(180000)) { throw "Cage workbench acceptance timed out. Diagnostics retained at $testRoot" }
         Assert-WindowsWorkbenchReport -ExitCode $window.ExitCode -Report $report
+        Wait-WindowsWorkbenchFiles -AppDirectory $AppDirectory
         $passed = $true
     } finally {
         if (-not $window.HasExited) { $window.Kill($true); $window.WaitForExit() }

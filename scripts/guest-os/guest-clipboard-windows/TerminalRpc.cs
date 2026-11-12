@@ -154,8 +154,9 @@ internal static class TerminalRpc
                 if (launch is not null)
                 {
                     shell = launch.Executable; arguments = launch.Arguments;
-                    environment = Marshal.StringToHGlobalUni(string.Join('\0', launch.Environment.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.Key + "=" + x.Value)) + "\0\0");
                 }
+                var variables = launch?.Environment ?? WindowsCliRpc.ToolEnvironment();
+                environment = Marshal.StringToHGlobalUni(string.Join('\0', variables.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.Key + "=" + x.Value)) + "\0\0");
                 if (!File.Exists(shell)) throw new InvalidDataException("terminal_shell_missing");
                 job = CreateJobObject(0, null); Check(job != 0);
                 var limits = new JobLimits(); limits.Basic.flags = 0x2000; // KILL_ON_JOB_CLOSE

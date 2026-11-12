@@ -103,10 +103,25 @@ func NewEgressGate(cfg Config) (*EgressGate, error) {
 }
 
 // SyncProxyRevision revokes every old connection/report while preserving the
-// VM. Only the private proxy generation may change; transports stay identical.
+// VM. A new proxy generation may carry its node's exit policy. Transports and
+// guest settings stay identical. Completing a previously empty anchor is also
+// allowed; both changes revoke authorization and require a fresh safety report.
 func (g *EgressGate) SyncProxyRevision(cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	g.mu.Lock()
 	before, after := g.config, cfg
+	oldPolicy, newPolicy := before.ExitPolicy.Normalized(), after.ExitPolicy.Normalized()
+	initialBinding := oldPolicy.NeedsBinding() && !newPolicy.NeedsBinding() &&
+		oldPolicy.Mode == newPolicy.Mode && oldPolicy.Scope == newPolicy.Scope &&
+		(oldPolicy.IP == "" || oldPolicy.IP == newPolicy.IP) &&
+		(oldPolicy.CountryCode == "" || oldPolicy.CountryCode == newPolicy.CountryCode) &&
+		(oldPolicy.Region == "" || oldPolicy.Region == newPolicy.Region) &&
+		(oldPolicy.City == "" || oldPolicy.City == newPolicy.City)
+	if before.ProxyRevision != after.ProxyRevision || initialBinding {
+		before.ExitPolicy, after.ExitPolicy = ExitPolicy{}, ExitPolicy{}
+	}
 	before.ProxyRevision, after.ProxyRevision = "", ""
 	if before != after || cfg.ProxyRevision == "" {
 		g.mu.Unlock()

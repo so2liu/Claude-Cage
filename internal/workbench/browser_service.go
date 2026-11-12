@@ -21,29 +21,30 @@ var (
 type browserInputError struct{ error }
 
 type browserInput struct {
-	Incognito      bool   `json:"incognito,omitempty"`
-	Enabled        *bool  `json:"enabled,omitempty"`
-	CookieKey      string `json:"cookieKey,omitempty"`
-	Scope          string `json:"scope,omitempty"`
-	Query          string `json:"query,omitempty"`
-	Page           int    `json:"page,omitempty"`
-	Left           string `json:"left,omitempty"`
-	Right          string `json:"right,omitempty"`
-	ID             string `json:"id"`
-	URL            string `json:"url"`
-	Width          int    `json:"width,omitempty"`
-	Height         int    `json:"height,omitempty"`
-	Workspace      string `json:"workspace,omitempty"`
-	ProjectID      string `json:"project_id,omitempty"`
-	ProjectGrant   string `json:"grant,omitempty"`
-	Text           string `json:"text,omitempty"`
-	Mode           string `json:"mode,omitempty"`
-	Target         string `json:"target,omitempty"`
-	Session        string `json:"session,omitempty"`
-	Context        string `json:"context,omitempty"`
-	Sequence       int    `json:"sequence"`
-	SelectionStart int    `json:"selectionStart,omitempty"`
-	SelectionEnd   int    `json:"selectionEnd,omitempty"`
+	Incognito      bool    `json:"incognito,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	CookieKey      string  `json:"cookieKey,omitempty"`
+	Scope          string  `json:"scope,omitempty"`
+	Query          string  `json:"query,omitempty"`
+	Page           int     `json:"page,omitempty"`
+	Left           string  `json:"left,omitempty"`
+	Right          string  `json:"right,omitempty"`
+	ID             string  `json:"id"`
+	URL            string  `json:"url"`
+	Width          int     `json:"width,omitempty"`
+	Height         int     `json:"height,omitempty"`
+	Scale          float64 `json:"scale,omitempty"`
+	Workspace      string  `json:"workspace,omitempty"`
+	ProjectID      string  `json:"project_id,omitempty"`
+	ProjectGrant   string  `json:"grant,omitempty"`
+	Text           string  `json:"text,omitempty"`
+	Mode           string  `json:"mode,omitempty"`
+	Target         string  `json:"target,omitempty"`
+	Session        string  `json:"session,omitempty"`
+	Context        string  `json:"context,omitempty"`
+	Sequence       int     `json:"sequence"`
+	SelectionStart int     `json:"selectionStart,omitempty"`
+	SelectionEnd   int     `json:"selectionEnd,omitempty"`
 }
 
 func (s *Server) browserClient() *browserClient {
@@ -114,6 +115,9 @@ func (s *Server) browserAction(ctx context.Context, action string, input *browse
 		}
 		if (action == "copy-context" || action == "copy" || action == "cut") && (input.ID == "" || !validInputToken(input.Context)) {
 			return nil, browserInputError{errors.New("复制操作或目标标签无效")}
+		}
+		if action == "resize" && !validDisplayDensity(input.Scale) {
+			return nil, browserInputError{errors.New("画面像素密度无效")}
 		}
 		if action == "insert-text" && (input.ID == "" || input.Text == "" || len(input.Text) > 8192) {
 			return nil, browserInputError{errors.New("输入文字或目标标签无效")}

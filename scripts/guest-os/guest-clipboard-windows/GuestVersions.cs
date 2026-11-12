@@ -29,7 +29,7 @@ internal static class GuestVersions
             var receipt = Path.Combine(AppContext.BaseDirectory, "cli-tools.json");
             Pairing.PrivateFile(receipt);
             var cli = JsonNode.Parse(File.ReadAllBytes(receipt)) as JsonObject;
-            foreach (var name in new[] { "python", "claude", "git_bash" })
+            foreach (var name in new[] { "python", "claude", "git_bash", "gh" })
             {
                 var filename = cli?[name]?.GetValue<string>();
                 var expected = cli?[name + "_sha256"]?.GetValue<string>();

@@ -4,6 +4,7 @@ mobile_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$mobile_dir"
 case "${1:-}" in
   android|ios) platform="$1" ;;
+  android-release) platform=android ;;
   ios-ipa|ios-ipa-basic)
     platform=ios
     if [[ $# != 2 || ! $2 =~ ^[A-Z0-9]{10}$ ]]; then
@@ -11,7 +12,7 @@ case "${1:-}" in
       exit 2
     fi
     ;;
-  *) echo "Usage: mobile/build.sh android | ios | ios-ipa TEAM_ID | ios-ipa-basic TEAM_ID" >&2; exit 2 ;;
+  *) echo "Usage: mobile/build.sh android | android-release | ios | ios-ipa TEAM_ID | ios-ipa-basic TEAM_ID" >&2; exit 2 ;;
 esac
 if [[ "$platform" == ios ]]; then
   # xcrun distinguishes a missing SDK from a pending Xcode license or setup step.
@@ -71,5 +72,9 @@ else
   (cd bindings && gomobile bind -target=android/arm64 -androidapi=26 \
     -ldflags='-extldflags=-Wl,-z,max-page-size=16384,-z,common-page-size=16384' \
     -o "$mobile_dir/.build/android/Cagemobile.aar" .)
-  bash android/package.sh
+  if [[ "$1" == android-release ]]; then
+    bash android/package.sh --release
+  else
+    bash android/package.sh
+  fi
 fi

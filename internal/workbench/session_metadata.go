@@ -69,10 +69,16 @@ func (s *Server) updateSessionMetadata(id string, input sessionMetadataInput, re
 
 // Archive state belongs to the shared catalog and survives terminal exits.
 func (s *Server) setSessionArchived(id string, archived bool, requestContext context.Context) error {
-	if !s.op.TryLock() {
-		return errTerminalBusy
+	if requestContext != nil && requestContext.Err() != nil {
+		return requestContext.Err()
 	}
+	// Serialize with terminal creation and teardown, but let an explicit archive
+	// wait for background network probes instead of rejecting the user's click.
+	s.op.Lock()
 	defer s.op.Unlock()
+	if requestContext != nil && requestContext.Err() != nil {
+		return requestContext.Err()
+	}
 	s.conversationMu.Lock()
 	defer s.conversationMu.Unlock()
 	m := &s.mobileCLI

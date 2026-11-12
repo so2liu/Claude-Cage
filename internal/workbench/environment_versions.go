@@ -67,7 +67,7 @@ try: manifest=json.loads(p.read_text())
 except (OSError,ValueError): manifest=None
 versions={}
 env={**os.environ,'DISABLE_AUTOUPDATER':'1','PATH':str(Path.home()/'.local/bin')+':'+os.environ.get('PATH','')}
-for name,args in {'chromium':['chromium','--version'],'code_server':['code-server','--version'],'claude':['claude','--version'],'mise':[str(Path.home()/'.local/bin/mise'),'--version']}.items():
+for name,args in {'chromium':['chromium','--version'],'code_server':['code-server','--version'],'claude':['claude','--version'],'gh':['gh','--version'],'git':['git','--version'],'mise':[str(Path.home()/'.local/bin/mise'),'--version']}.items():
  try:
   result=subprocess.run(args,env=env,capture_output=True,text=True,timeout=4)
   versions[name]=result.stdout.strip().splitlines()[0][:200] if result.returncode==0 and result.stdout.strip() else ''

@@ -120,13 +120,15 @@ export function SettingsPanel({
   useEffect(() => {
     if (jobId && status.job?.id === jobId && !status.job.running) {
       setJobId("");
-      if (status.job.error) setError(status.job.error);
-      else {
+      if (status.job.error || status.job.canceled) {
+        if (status.job.settings_saved) onSaved();
+        setError(status.job.error || status.job.message);
+      } else {
         onSaved();
         if (!proxyDirty) onClose();
       }
     }
-  }, [status.job]);
+  }, [status.job, jobId]);
   const check = async () => {
     setProbing(true);
     setProbeFailed(false);
@@ -264,7 +266,12 @@ export function SettingsPanel({
                   onConfirm={onConfirm}
                   onApplied={async () => {
                     setProbe(null);
-                    onSaved();
+                    const applied = await api("/settings");
+                    if (JSON.stringify(canonicalExitPolicy(applied.exit_policy)) !==
+                        JSON.stringify(canonicalExitPolicy(current.exit_policy))) {
+                      setDraft(previous => ({ ...previous, exit_policy: applied.exit_policy }));
+                    }
+                    await onSaved();
                   }}
                 />
                 <label>

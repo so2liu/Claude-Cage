@@ -15,7 +15,7 @@ var linuxDesktopVisibility string
 
 // A controller owns all computer viewers and the paired phone's display lease.
 // Serialize guest changes so a late hide completes before a new viewer resumes.
-type desktopViewDemand struct {
+type displayViewDemand struct {
 	mu           sync.Mutex
 	op           sync.Mutex
 	viewers      int
@@ -23,7 +23,7 @@ type desktopViewDemand struct {
 	known, shown bool // guarded by op
 }
 
-func (d *desktopViewDemand) apply(update func(bool) error) error {
+func (d *displayViewDemand) apply(update func(bool) error) error {
 	d.op.Lock()
 	defer d.op.Unlock()
 	d.mu.Lock()
@@ -40,7 +40,7 @@ func (d *desktopViewDemand) apply(update func(bool) error) error {
 	return nil
 }
 
-func (d *desktopViewDemand) background(update func(bool) error) {
+func (d *displayViewDemand) background(update func(bool) error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.viewers != 0 {
@@ -52,7 +52,7 @@ func (d *desktopViewDemand) background(update func(bool) error) {
 	d.idle = time.AfterFunc(500*time.Millisecond, func() { _ = d.apply(update) })
 }
 
-func (d *desktopViewDemand) acquire(update func(bool) error) (func(), error) {
+func (d *displayViewDemand) acquire(update func(bool) error) (func(), error) {
 	d.mu.Lock()
 	d.viewers++
 	if d.idle != nil {
@@ -69,7 +69,7 @@ func (d *desktopViewDemand) acquire(update func(bool) error) (func(), error) {
 	return release, nil
 }
 
-func (d *desktopViewDemand) reset() {
+func (d *displayViewDemand) reset() {
 	d.op.Lock()
 	d.known = false
 	d.op.Unlock()
@@ -87,7 +87,7 @@ func (s *Server) updateDesktopVisibility(show bool) error {
 		return ctx.Err()
 	}
 	script := "/usr/bin/python3 - " + strconv.FormatBool(show) + " <<'CAGE_DESKTOP_VISIBILITY'\n" + linuxDesktopVisibility + "\nCAGE_DESKTOP_VISIBILITY\n"
-	_, err := s.guest(ctx, script)
+	_, err := s.guestQuick(ctx, script)
 	if err != nil && ctx.Err() == nil {
 		_ = diagnostics.New(s.profile).Record("warn", "desktop-visibility", "应用窗口显示状态未能同步："+err.Error())
 	}
@@ -106,4 +106,20 @@ func (s *Server) changeDesktopVisibility(show bool) error {
 		return s.desktopDisplayUpdate(show)
 	}
 	return s.updateDesktopVisibility(show)
+}
+
+func (s *Server) changeBrowserVisibility(show bool) error {
+	if s.macosGuest != nil || s.windowsGuest != nil {
+		return nil
+	}
+	s.mu.Lock()
+	ready, token := s.ready, s.credentials.Token
+	s.mu.Unlock()
+	if !ready {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(s.lifetimeContext(), 5*time.Second)
+	defer cancel()
+	_, err := s.guestAPI(ctx, token, "POST", "/visibility", []byte(`{"visible":`+strconv.FormatBool(show)+`}`))
+	return err
 }

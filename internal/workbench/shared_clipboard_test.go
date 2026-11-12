@@ -3,6 +3,8 @@ package workbench
 import (
 	"archive/tar"
 	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,9 +17,47 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sylvinus/agent-vm/internal/cage"
 	"github.com/sylvinus/agent-vm/internal/clipboardfiles"
 	"github.com/sylvinus/agent-vm/internal/guestos"
 )
+
+func TestLinuxClipboardCommandFitsWindowsProcessLimit(t *testing.T) {
+	server := testServer(t)
+	command, _, err := server.clipboardCommand(t.Context(), "stream", clipboardFileSelection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 给 SSH 路径、选项和 Windows 参数转义留足空间，防止脚本增长后重现启动失败。
+	if len(strings.Join(command.Args, " ")) > 24<<10 {
+		t.Fatal("Linux 客机剪贴板命令过长，可能超过 Windows 进程限制")
+	}
+
+	// 校验实际命令里的载荷，确保运行的是随当前后端发布的完整脚本。
+	if len(command.Args) < 2 {
+		t.Fatal("剪贴板启动命令缺少载荷")
+	}
+	fields := strings.Fields(command.Args[len(command.Args)-1])
+	if len(fields) == 0 {
+		t.Fatal("剪贴板启动命令缺少载荷")
+	}
+	compressed, err := base64.StdEncoding.DecodeString(fields[len(fields)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zlib.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	script, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(script) != cage.SharedClipboardHelper {
+		t.Fatal("剪贴板脚本在压缩传输中发生变化")
+	}
+}
 
 func TestClipboardFileReleaseWaitsForArchiveReader(t *testing.T) {
 	s := testServer(t)

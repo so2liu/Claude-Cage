@@ -70,6 +70,10 @@ func (s *Server) terminalStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(subscription.History) > 0 {
 		_ = ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		// Replayed output must render without repeating clipboard side effects.
+		if err := ws.WriteJSON(map[string]string{"type": "history"}); err != nil {
+			return
+		}
 		if err := ws.WriteMessage(websocket.BinaryMessage, subscription.History); err != nil {
 			return
 		}

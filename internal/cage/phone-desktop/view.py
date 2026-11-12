@@ -36,7 +36,8 @@ layout_file = Path('/run/cage-phone-desktop/layout.json')
 def display_scale():
     path = Path('/run/cage-desktop/display-scale')
     value = float(path.read_text()) if path.exists() else 2
-    if not math.isfinite(value) or not 1 <= value <= 8:
+    # A computer showing more of the application on a 1x screen goes below 1.
+    if not math.isfinite(value) or not .75 <= value <= 8:
         raise Failure(503)
     return value
 
@@ -95,6 +96,11 @@ def restore_layout():
     with open('/run/cage-desktop/resize.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         layout = json.loads(layout_file.read_text())
+        # A computer that resized meanwhile left its latest size and density.
+        pending = Path('/run/cage-desktop/desktop-size')
+        latest = pending.read_text().split() if pending.exists() else []
+        if len(latest) > 2:
+            layout['scale'] = float(latest[2])
         if 'scale' in layout and Path('/run/cage-desktop/xsettings.pid').exists():
             set_display_scale(layout['scale'])
         conn = display.Display()
@@ -112,9 +118,8 @@ def restore_layout():
                 continue
         conn.sync()
         width, height = layout['width'], layout['height']
-        pending = Path('/run/cage-desktop/desktop-size')
-        if pending.exists():
-            width, height = map(int, pending.read_text().split())
+        if len(latest) > 1:
+            width, height = int(latest[0]), int(latest[1])
         display_size(width, height)
         layout_file.unlink()
         conn.close()

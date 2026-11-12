@@ -103,7 +103,8 @@ command_not_found_handler() { return 127; }
 					break
 				}
 				channel.Close()
-				break
+				// Let the client consume exit-status and close its transport.
+				// Closing the TCP connection here can turn success into SSH 255.
 			}
 			server.Close()
 		}

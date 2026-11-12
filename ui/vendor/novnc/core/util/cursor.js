@@ -9,8 +9,9 @@ import { supportsCursorURIs, isTouchDevice } from './browser.js';
 const useFallback = !supportsCursorURIs || isTouchDevice;
 
 export default class Cursor {
-    constructor() {
+    constructor(fallback = 'none') {
         this._target = null;
+        this._fallback = fallback === 'default' ? 'default' : 'none';
 
         this._canvas = document.createElement('canvas');
 
@@ -106,7 +107,7 @@ export default class Cursor {
     }
 
     clear() {
-        this._target.style.cursor = 'none';
+        this._target.style.cursor = this._fallback;
         this._canvas.width = 0;
         this._canvas.height = 0;
         this._position.x = this._position.x + this._hotSpot.x;

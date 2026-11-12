@@ -319,10 +319,10 @@ export function MacOSLogin({ disabled, initialSetup = false, maintenance = "", l
           }
         }}>
         <div className="mac-login-panel">
-        {!initialSetup && <header className="mac-login-heading">
-          <h2>{maintenance ? "恢复客机系统权限" : "登录 macOS 客机"}</h2>
-          <p>{maintenance ? "在当前系统设置窗口中完成授权。切换到其他客机应用或锁定后，画面会结束。" : "输入客机账户密码，按回车登录。"}</p>
-        </header>}
+        <header className="mac-login-heading">
+          <h2>{initialSetup ? "虚拟 Mac 的系统设置" : maintenance ? "恢复客机系统权限" : "登录 macOS 客机"}</h2>
+          <p>{initialSetup ? "按下方提示完成当前授权，Cage 会自动检查。可以随时返回设置指引继续处理。" : maintenance ? "在当前系统设置窗口中完成授权。切换到其他客机应用或锁定后，画面会结束。" : "输入客机账户密码，按回车登录。"}</p>
+        </header>
         <div className="mac-login-tools" role="toolbar" aria-label="画面工具">
           <button ref={back} onClick={() => end()}><ArrowLeft size={16} aria-hidden="true" />{initialSetup ? "返回设置指引" : "返回工作台"}</button>
           <button aria-pressed={!zoomed} onClick={() => changeZoom(false)}><Maximize size={16} aria-hidden="true" />{initialSetup || maintenance ? "适配" : "完整画面"}</button>
@@ -341,7 +341,7 @@ export function MacOSLogin({ disabled, initialSetup = false, maintenance = "", l
           {authorizationPassword && <span className="mac-login-password">{authorizationPassword}<button onClick={() => setAuthorizationPassword("")}>隐藏</button></span>}
         </div>
         {maintenance && <div className="mac-setup-hint">
-          {maintenance === "projects" && <p>进入「文件系统扩展」，同时启用 macFUSE 和 macFUSE (local)。授权后 Cage 会自动检查并重新连接项目。</p>}
+          {maintenance === "projects" && <p>Cage 会直接打开「文件系统扩展」面板。打开 macFUSE 和 macFUSE (local) 两个开关，Cage 会自动检查并重新连接项目。</p>}
           {administrator && <p>系统要求管理员时，用户名填写 {administrator}。选中系统授权窗口的密码框后，点击「填写管理员密码」，再由你确认授权。</p>}
           {administrator && <button type="button" onClick={() => enqueue("fill-password", {})}>填写管理员密码</button>}
         </div>}

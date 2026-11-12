@@ -8,6 +8,8 @@ Cage 的 Windows 版本面向 Windows 10 22H2（内部版本 19045）和 Windows
 
 “自动匹配本机系统版本”匹配 Windows 发行版本、版本类型和语言，展示主机与客机补丁构建差异；安装中断后继续原记录与系统盘。当前已实测建机、首次启动与冷启动，修复后的最终工作台登记仍待复验。完整条件和流程见[客机系统指南](guide/guest-systems.md#自动匹配本机系统版本)。
 
+使用本机 ISO 时，安装窗口会先收集客机本地管理员账户，用安装应答完成离线账户创建。进入客机桌面后回 Cage 继续安装，组件置备期间保持 PowerShell 安装窗口开启。具体步骤及旧安装接续见[使用 Windows 本机 ISO](guide/guest-systems.md#使用-windows-本机-iso)。
+
 | 项目 | 要求 |
 |---|---|
 | 系统 | x64 Windows 10 22H2 或 Windows 11；不包含 Windows ARM64 与 32 位系统 |

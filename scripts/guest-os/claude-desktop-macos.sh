@@ -8,18 +8,9 @@ fail() { printf '%s\n' "$*" >&2; exit 1; }
 case "${1:-}" in
   inspect|launch) [[ $# == 1 ]] || fail "Usage: $0 $1" ;;
   install) [[ $# == 2 ]] || fail "Usage: $0 install /path/to/Claude.dmg" ;;
+  verify-media) [[ $# == 3 && $3 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Usage: $0 verify-media /path/to/Claude.dmg version" ;;
   *) fail "Usage: $0 inspect | install /path/to/Claude.dmg | launch" ;;
 esac
-
-[[ $(uname -s) == Darwin ]] || fail "This helper requires a Cage macOS guest."
-model=$(sysctl -n hw.model)
-[[ $model =~ ^VirtualMac[0-9]+,[0-9]+$ ]] || fail "This Mac is not a virtual Mac. Run this helper inside the Cage guest."
-marker=/var/db/cage-guest-os
-[[ -f $marker && ! -L $marker && $(stat -f '%u' "$marker") == 0 ]] ||
-  fail "Missing root-owned Cage guest marker."
-mode=$(stat -f '%OLp' "$marker")
-(( (8#$mode & 022) == 0 )) && [[ $(cat "$marker") == macos ]] ||
-  fail "Invalid Cage guest marker."
 
 app=/Applications/Claude.app
 bundle_id=com.anthropic.claudefordesktop
@@ -35,6 +26,49 @@ verify_app() {
   [[ $(info "$1" CFBundleIdentifier) == "$bundle_id" ]] || fail "Unexpected Claude bundle identifier."
   codesign --verify --deep --strict "$1"
   codesign --verify --strict -R "=$requirement" "$1"
+}
+
+if [[ $1 == verify-media ]]; then
+  [[ $2 == /* && -f $2 && ! -L $2 ]] || fail 'Supply a downloaded Claude DMG.'
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/claude-media.XXXXXXXX")
+  mountdir="$stage/media"
+  mkdir "$mountdir"
+  mounted=false
+  cleanup() {
+    if [[ $mounted == true ]]; then
+      hdiutil detach "$mountdir" >/dev/null || return
+    fi
+    rm -rf "$stage"
+  }
+  trap cleanup EXIT
+  trap 'exit 1' HUP INT TERM
+  hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountdir" "$2" >/dev/null
+  mounted=true
+  verify_app "$mountdir/Claude.app"
+  [[ $(info "$mountdir/Claude.app" CFBundleShortVersionString) == "$3" ]] || fail 'Claude media version differs from the official release.'
+  exit 0
+fi
+
+[[ $(uname -s) == Darwin ]] || fail "This helper requires a Cage macOS guest."
+model=$(sysctl -n hw.model)
+[[ $model =~ ^VirtualMac[0-9]+,[0-9]+$ ]] || fail "This Mac is not a virtual Mac. Run this helper inside the Cage guest."
+marker=/var/db/cage-guest-os
+[[ -f $marker && ! -L $marker && $(stat -f '%u' "$marker") == 0 ]] ||
+  fail "Missing root-owned Cage guest marker."
+mode=$(stat -f '%OLp' "$marker")
+(( (8#$mode & 022) == 0 )) && [[ $(cat "$marker") == macos ]] ||
+  fail "Invalid Cage guest marker."
+
+version_ge() {
+  local i left right
+  local -a a b
+  [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $2 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a a <<< "$1"
+  IFS=. read -r -a b <<< "$2"
+  for ((i=0; i<3; i++)); do
+    left=$((10#${a[i]})); right=$((10#${b[i]}))
+    (( left == right )) || { (( left > right )); return; }
+  done
 }
 
 report() {
@@ -74,8 +108,7 @@ case "$1" in
     rename_flag=4 # RENAME_EXCL
     if [[ -e $app || -L $app ]]; then
       verify_app "$app"
-      if [[ $(info "$source_app" CFBundleVersion) == "$(info "$app" CFBundleVersion)" &&
-            $(info "$source_app" CFBundleShortVersionString) == "$(info "$app" CFBundleShortVersionString)" ]]; then
+      if version_ge "$(info "$app" CFBundleShortVersionString)" "$(info "$source_app" CFBundleShortVersionString)"; then
         report installed
         exit 0
       fi

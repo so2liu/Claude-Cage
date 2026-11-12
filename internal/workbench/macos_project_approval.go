@@ -57,6 +57,7 @@ func (s *Server) macOSProjectApproval(w http.ResponseWriter, r *http.Request) {
 	defer s.op.Unlock()
 	if req.Action == "cancel" {
 		if !s.cancelMacOSProjectApproval(req.Workspace, req.Grant) {
+			w.Header().Set("X-Cage-Recovery", "project-approval-ended")
 			http.Error(w, "项目授权已结束", http.StatusConflict)
 			return
 		}
@@ -68,11 +69,13 @@ func (s *Server) macOSProjectApproval(w http.ResponseWriter, r *http.Request) {
 	active := s.macosGuest != nil && s.ready && !s.closing && share != nil && equalSecret(share.approval, req.Grant)
 	s.mu.Unlock()
 	if !active {
-		http.Error(w, "项目授权已结束，请重新打开项目", http.StatusConflict)
+		w.Header().Set("X-Cage-Recovery", "project-approval-ended")
+		http.Error(w, "项目授权请求已失效，请重新请求授权。", http.StatusConflict)
 		return
 	}
 	select {
 	case <-share.done:
+		w.Header().Set("X-Cage-Recovery", "project-approval-ended")
 		http.Error(w, "项目挂载已断开", http.StatusConflict)
 		return
 	default:

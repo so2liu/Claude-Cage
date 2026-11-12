@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func (s *Server) claudeDesktopStatus(w http.ResponseWriter, r *http.Request) {
 			}
 			return json.Marshal(result)
 		}
-		return s.guest(ctx, claudeDesktopSnapshot)
+		return s.guestQuick(ctx, claudeDesktopSnapshot)
 	})
 	var state claudeDesktopState
 	if err != nil {
@@ -190,33 +191,43 @@ func (s *Server) claudeDesktopCredentials(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	b, err := s.guest(ctx, `set -eu
+	b, err := s.guestQuick(ctx, `set -eu
 systemctl is-active --quiet cage-claude-desktop.service
 password=$(cat /home/cage/.config/claude-cage/desktop-password)
 printf '%s\n' "$password"
 if test -f /run/cage-desktop/base-display-scale; then cat /run/cage-desktop/base-display-scale
-elif test -f /run/cage-desktop/display-scale; then cat /run/cage-desktop/display-scale; fi`)
+elif test -f /run/cage-desktop/display-scale; then cat /run/cage-desktop/display-scale
+else echo; fi
+if test -f /run/cage-desktop/xsettings.pid; then echo dynamic; fi`)
 	password, scale, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
 	if err != nil || len(password) != 8 {
 		http.Error(w, "Claude Desktop 尚未启动", 409)
 		return
 	}
+	// With a settings manager the viewer chooses the density of its own screen.
+	scale, dynamic, _ := strings.Cut(scale, "\n")
 	density := 2.0
 	if scale == "1.5" {
 		density = 1.5
 	}
-	jsonReply(w, map[string]any{"password": password, "display_scale": density})
+	jsonReply(w, map[string]any{"password": password, "display_scale": density, "dynamic_scale": dynamic == "dynamic"})
+}
+
+// The zero value is a viewer that leaves the display's density alone.
+func validDisplayDensity(scale float64) bool {
+	return scale == 0 || scale >= 0.75 && scale <= 4
 }
 
 func (s *Server) claudeDesktopResize(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Width  int `json:"width"`
-		Height int `json:"height"`
+		Width  int     `json:"width"`
+		Height int     `json:"height"`
+		Scale  float64 `json:"scale"`
 	}
 	if !readJSON(w, r, &input) {
 		return
 	}
-	if input.Width < 320 || input.Height < 240 || input.Width > 8192 || input.Height > 8192 {
+	if input.Width < 320 || input.Height < 240 || input.Width > 8192 || input.Height > 8192 || !validDisplayDensity(input.Scale) {
 		http.Error(w, "画面尺寸无效", 400)
 		return
 	}
@@ -230,14 +241,55 @@ func (s *Server) claudeDesktopResize(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, map[string]bool{"ok": true})
 		return
 	}
-	// Fixed commands and validated integers only; no host shell executes input.
-	wid, hei := input.Width, input.Height
-	script := fmt.Sprintf(`set -eu
+	scale := ""
+	if input.Scale != 0 {
+		scale = strconv.FormatFloat(input.Scale, 'f', -1, 64)
+	}
+	script := desktopResizeScript(input.Width, input.Height, scale)
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	output, err := s.guestQuick(ctx, script)
+	if err != nil {
+		http.Error(w, "Claude Desktop 画面尺寸未能调整", 502)
+		return
+	}
+	reply := map[string]any{"ok": true}
+	if applied, _, _ := strings.Cut(string(output), "\n"); scale != "" && strings.TrimSpace(applied) == "scale "+scale {
+		reply["scale"] = input.Scale
+	}
+	jsonReply(w, reply)
+}
+
+// Fixed commands and validated numbers only; no host shell executes input.
+// scale is empty for a viewer that leaves the display's density alone.
+func desktopResizeScript(wid, hei int, scale string) string {
+	return fmt.Sprintf(`set -eu
 export DISPLAY=:78 XAUTHORITY=/run/cage-desktop/Xauthority
 exec 9>/run/cage-desktop/resize.lock
 flock 9
-printf '%%s %%s\n' %d %d > /run/cage-desktop/desktop-size
+requested=%s
+manager=
+if test -r /run/cage-desktop/xsettings.pid; then
+  manager=$(cat /run/cage-desktop/xsettings.pid)
+  if test "$(cat "/proc/$manager/comm" 2>/dev/null)" != xsettingsd; then manager=; fi
+fi
+# A fixed-density session ignores the request, and its viewer sizes for that
+# density. A viewer that names none sized its display for the configured one.
+scale=
+if test -n "$manager"; then
+  scale=${requested:-$(cat /run/cage-desktop/base-display-scale 2>/dev/null || echo 2)}
+  if test -n "$requested"; then echo "scale $scale"; fi
+fi
+printf '%%s %%s %%s\n' %d %d "$scale" > /run/cage-desktop/desktop-size
+# A phone holds the display. Its release applies this size and density.
 if test -f /run/cage-phone-desktop/layout.json; then exit 0; fi
+if test -n "$manager" && test "$(cat /run/cage-desktop/display-scale 2>/dev/null)" != "$scale"; then
+  dpi=$(awk -v scale="$scale" 'BEGIN {printf "%%.0f", scale * 96 * 1024}')
+  printf 'Xft/DPI %%s\nGdk/WindowScalingFactor 1\nGdk/UnscaledDPI %%s\nGtk/DecorationLayout ":"\n' "$dpi" "$dpi" > /run/cage-desktop/xsettings.conf.new
+  mv /run/cage-desktop/xsettings.conf.new /run/cage-desktop/xsettings.conf
+  kill -HUP "$manager"
+  printf '%%s\n' "$scale" > /run/cage-desktop/display-scale
+fi
 name=cage-%dx%d
 if ! xrandr --query | grep -q " $name "; then
   xrandr --newmode "$name" %.3f %d %d %d %d %d %d %d %d +HSync -VSync
@@ -246,14 +298,7 @@ fi
 xrandr --output VNC-0 --mode "$name"
 for old in $(xrandr --query | awk '/^ +cage-/ {print $1}'); do
   if [ "$old" != "$name" ]; then xrandr --delmode VNC-0 "$old"; xrandr --rmmode "$old"; fi
-done`, wid, hei, wid, hei, float64((wid+32)*(hei+8)*60)/1000000, wid, wid+8, wid+16, wid+32, hei, hei+1, hei+2, hei+8)
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer cancel()
-	if _, err := s.guest(ctx, script); err != nil {
-		http.Error(w, "Claude Desktop 画面尺寸未能调整", 502)
-		return
-	}
-	jsonReply(w, map[string]bool{"ok": true})
+done`, scale, wid, hei, wid, hei, float64((wid+32)*(hei+8)*60)/1000000, wid, wid+8, wid+16, wid+32, hei, hei+1, hei+2, hei+8)
 }
 
 func (s *Server) claudeDesktopVNC(w http.ResponseWriter, r *http.Request) {

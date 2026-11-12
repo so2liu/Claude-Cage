@@ -163,7 +163,8 @@ internal sealed class NativeInput : TextBox
         publish(new() { ["owner"] = owner, ["kind"] = down ? "keydown" : "keyup", ["key"] = text ?? pair.Item1,
             ["code"] = code, ["textKey"] = text != null, ["repeat"] = repeating,
             ["ctrlKey"] = (ModifierKeys & Keys.Control) != 0, ["altKey"] = (ModifierKeys & Keys.Alt) != 0,
-            ["shiftKey"] = (ModifierKeys & Keys.Shift) != 0, ["metaKey"] = false });
+            ["shiftKey"] = (ModifierKeys & Keys.Shift) != 0, ["metaKey"] = false,
+            ["modifierCapsLock"] = IsKeyLocked(Keys.CapsLock) });
     }
 
     private void ReadKeyMessage(Message message)
@@ -212,6 +213,8 @@ internal sealed class NativeInput : TextBox
         // The control participates in native text services but paints no text.
         if (message.Msg == 0xf) { ValidateRect(Handle, IntPtr.Zero); message.Result = IntPtr.Zero; return; }
         base.WndProc(ref message);
+        if (owner.Length > 0 && message.Msg is Start or Composition or 0x7 or 0x5 or 0x3)
+            PositionCandidates();
         if (IsHandleCreated) HideCaret(Handle);
     }
 
@@ -229,15 +232,19 @@ internal sealed class NativeInput : TextBox
         var context = ImmGetContext(Handle);
         if (context == IntPtr.Zero) return;
         var candidate = new Candidate { Style = 0x80, Point = new Point(0, Height), Area = new Rect { Bottom = Height, Right = 1 } };
+        var composition = new CompositionForm { Style = 2, Point = new Point(0, 0) };
+        ImmSetCompositionWindow(context, ref composition);
         ImmSetCandidateWindow(context, ref candidate);
         ImmReleaseContext(Handle, context);
     }
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] private struct Candidate { public int Index, Style; public Point Point; public Rect Area; }
+    [StructLayout(LayoutKind.Sequential)] private struct CompositionForm { public int Style; public Point Point; public Rect Area; }
     [DllImport("imm32.dll")] private static extern IntPtr ImmGetContext(IntPtr window);
     [DllImport("imm32.dll")] private static extern bool ImmReleaseContext(IntPtr window, IntPtr context);
     [DllImport("imm32.dll", EntryPoint = "ImmGetCompositionStringW")] private static extern int ImmGetCompositionString(IntPtr context, int index, byte[]? data, int length);
     [DllImport("imm32.dll")] private static extern bool ImmSetCandidateWindow(IntPtr context, ref Candidate candidate);
+    [DllImport("imm32.dll")] private static extern bool ImmSetCompositionWindow(IntPtr context, ref CompositionForm composition);
     [DllImport("imm32.dll")] private static extern bool ImmNotifyIME(IntPtr context, int action, int index, int value);
     [DllImport("user32.dll")] private static extern bool HideCaret(IntPtr window);
     [DllImport("user32.dll")] private static extern bool ValidateRect(IntPtr window, IntPtr rect);

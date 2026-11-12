@@ -54,5 +54,5 @@ func (s *Server) rebindProxyInterface() error {
 	if err != nil {
 		return err
 	}
-	return s.applyProxy(p, cfg, nil)
+	return s.applyProxy(p, cfg, nil, false)
 }

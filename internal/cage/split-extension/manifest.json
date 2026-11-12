@@ -2,13 +2,5 @@
   "manifest_version": 3,
   "name": "Cage browser panes",
   "version": "1.0",
-  "permissions": ["debugger", "tabs", "favicon", "management"],
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["browser-identity.js"],
-    "run_at": "document_start",
-    "all_frames": true,
-    "match_origin_as_fallback": true,
-    "world": "MAIN"
-  }]
+  "permissions": ["debugger", "tabs", "favicon", "management"]
 }

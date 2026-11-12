@@ -13,6 +13,9 @@ export default {
 
     encode(data) {
         "use strict";
+        if (typeof data.toBase64 === 'function') {
+            return data.toBase64();
+        }
         let result = '';
         const length = data.length;
         const lengthpad = (length % 3);

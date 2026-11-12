@@ -1,5 +1,55 @@
 ﻿#requires -Version 5.1
 # Functions used only for a new private Windows guest disk.
+function New-CageISOAnswer([pscredential]$Administrator) {
+    if (!$Administrator -or $Administrator.UserName.Length -gt 20 -or
+        $Administrator.UserName -match '["/\\\[\]:;|=,+*?<>@\x00-\x1f]' -or
+        $Administrator.UserName.Trim() -cne $Administrator.UserName -or $Administrator.UserName.EndsWith('.') -or
+        $Administrator.UserName -in @('Administrator', 'Guest', 'DefaultAccount', 'WDAGUtilityAccount', 'cagesetup') -or
+        $Administrator.Password.Length -eq 0) {
+        throw '请输入新的客机本地管理员名称和非空密码。用户名最多 20 个字符，请使用普通本地名称。'
+    }
+    $answer = [xml]@'
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="specialize"/>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE></OOBE>
+      <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name/><Description>Cage ISO initial administrator</Description><Group>Administrators</Group><Password><Value/><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
+    </component>
+  </settings>
+</unattend>
+'@
+    $ns = [Xml.XmlNamespaceManager]::new($answer.NameTable)
+    $ns.AddNamespace('u', 'urn:schemas-microsoft-com:unattend')
+    $answer.SelectSingleNode('//u:LocalAccount/u:Name', $ns).InnerText = $Administrator.UserName
+    $answer.SelectSingleNode('//u:LocalAccount/u:Password/u:Value', $ns).InnerText = $Administrator.GetNetworkCredential().Password
+    return $answer
+}
+
+function Remove-CageISOAnswer($VM, $Session, [string]$InstanceDirectory) {
+    Invoke-Command -Session $Session -ArgumentList $VM.Id -ScriptBlock {
+        param($expected)
+        if ([guid](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters').VirtualMachineId -ne $expected) { throw 'wrong guest' }
+        $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup'
+        if ($setup.SystemSetupInProgress -ne 0 -or $setup.OOBEInProgress -ne 0 -or !(Test-Path 'C:\Program Files\PowerShell\7\pwsh.exe')) {
+            throw '请在虚拟机连接窗口完成 Windows 首次设置并登录桌面，然后回 Cage 继续安装。'
+        }
+        foreach ($path in @('C:\Windows\Panther\Unattend.xml', 'C:\Windows\Panther\Unattend\Unattend.xml')) {
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            try { $answer = [xml][IO.File]::ReadAllText($path) }
+            catch { continue } # Preserve an unrecognized answer without logging its contents.
+            $ns = [Xml.XmlNamespaceManager]::new($answer.NameTable)
+            $ns.AddNamespace('u', 'urn:schemas-microsoft-com:unattend')
+            if ($answer.SelectSingleNode('//u:LocalAccount[u:Description="Cage ISO initial administrator"]', $ns)) {
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
+    }
+    $answerPath = Join-Path $InstanceDirectory 'windows-guest-tools.iso'
+    $VM | Hyper-V\Get-VMDvdDrive | Where-Object Path -eq $answerPath | Hyper-V\Remove-VMDvdDrive
+    [IO.File]::Delete($answerPath)
+}
+
 function New-CageCloneAnswer([pscredential]$Administrator, [string]$Language) {
     if (!$Administrator -or $Administrator.UserName -cne 'cagesetup' -or $Language -notmatch '^[a-zA-Z]{2,3}-[a-zA-Z0-9-]{2,12}$') {
         throw 'The new guest setup identity or language is invalid.'

@@ -161,6 +161,70 @@ func TestStartNoBase(t *testing.T) {
 	}
 }
 
+func TestStartExistingVMWithoutUsableBase(t *testing.T) {
+	for _, status := range []vm.Status{vm.Stopped, vm.Running} {
+		for _, baseState := range []string{"missing", "unmarked", "broken"} {
+			t.Run(string(status)+"/"+baseState, func(t *testing.T) {
+				se := newStartEnv(t)
+				se.base()
+				if code := se.run("run", "true"); code != 0 {
+					t.Fatalf("initial start: %d %s", code, se.out())
+				}
+				name := vmname.Name(se.proj)
+				original := se.fake.VMs[name]
+				original.Status = status
+				switch baseState {
+				case "missing":
+					delete(se.fake.VMs, vmname.Template)
+				case "unmarked":
+					if err := os.Remove(se.state.Path(state.BaseVersion)); err != nil {
+						t.Fatal(err)
+					}
+				case "broken":
+					se.fake.VMs[vmname.Template].ConfigErr = errors.New("invalid template config")
+				}
+				if code := se.run("run", "echo", "still-here"); code != 0 {
+					t.Fatalf("existing environment should survive unavailable base: %d %s", code, se.out())
+				}
+				if se.fake.VMs[name] != original || strings.Contains(se.fake.CallLog(), "clone ") || strings.Contains(se.fake.CallLog(), "delete ") {
+					t.Fatalf("existing environment was replaced: %s", se.fake.CallLog())
+				}
+				last := se.g.ran[len(se.g.ran)-1]
+				if last[len(last)-1] != "still-here" {
+					t.Fatalf("command did not reach the retained environment: %q", last)
+				}
+			})
+		}
+	}
+}
+
+func TestStartResetWithoutBasePreservesExistingVM(t *testing.T) {
+	for _, missingMarker := range []bool{false, true} {
+		t.Run(fmt.Sprint("missingMarker=", missingMarker), func(t *testing.T) {
+			se := newStartEnv(t)
+			se.base()
+			if code := se.run("run", "true"); code != 0 {
+				t.Fatalf("initial start: %d %s", code, se.out())
+			}
+			name := vmname.Name(se.proj)
+			original := se.fake.VMs[name]
+			if missingMarker {
+				if err := os.Remove(se.state.Path(state.BaseVersion)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				delete(se.fake.VMs, vmname.Template)
+			}
+			if code := se.run("--reset", "run", "true"); code != 1 {
+				t.Fatalf("reset should require a usable base: %d %s", code, se.out())
+			}
+			if se.fake.VMs[name] != original || se.fake.CallLog() != "" {
+				t.Fatalf("failed reset changed the original environment: %s", se.fake.CallLog())
+			}
+		})
+	}
+}
+
 func TestStartNewVM(t *testing.T) {
 	se := newStartEnv(t)
 	se.base()

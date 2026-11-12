@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bundle notices for the actual mobile Go dependency graph.
+# Bundle notices for the linked mobile dependencies and bundled interface.
 set -euo pipefail
 mobile_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$mobile_dir/bindings"
@@ -30,6 +30,9 @@ NOTICE
     done
   done < "$list"
 } > "$output/THIRD_PARTY_NOTICES.txt"
+for package in react react-dom scheduler lucide-react; do
+  cp "$mobile_dir/../ui/node_modules/$package/LICENSE" "$output/$package-LICENSE.txt"
+done
 cp "$mobile_dir/../ui/node_modules/marked/LICENSE" "$output/Marked-LICENSE.txt"
 cp "$mobile_dir/android/licenses/ZXing-LICENSE.txt" "$output/ZXing-LICENSE.txt"
 if [[ -f "$mobile_dir/.build/android/webkit-1.14.0.aar" ]]; then
